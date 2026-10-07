@@ -32,6 +32,9 @@
 3. 构建完成后在 `Artifacts` 下载 `app-debug-apk`，即得到可安装的 `app-debug.apk`。
 4. 该 APK 是「模拟模式」构建（因云端无厂商 SDK），用于流程验证；接真实 RFID 时在本地按路径 B/C 构建。
 
+> 完整图文步骤（新建空仓库 → 一键推送 → 触发 → 下载 → 安装）→ 见 **[DEPLOY.md](DEPLOY.md)**。
+> 不想敲命令可直接双击 **`push_to_github.bat`** 完成推送。
+
 ### 路径 B：Android Studio（推荐本地构建，最省心）
 1. 安装 **Android Studio**（Hedgehog / Iguana 以上，自带 JDK 17 与 Android SDK）。
 2. 接真实 RFID 才需要把 iData UHF SDK 放好（见第三节）；**不放也能直接构建**。
