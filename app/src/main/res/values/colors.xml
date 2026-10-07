@@ -1,0 +1,5 @@
+<resources>
+    <color name="success">#2E7D32</color>
+    <color name="failed">#C62828</color>
+    <color name="pending">#F9A825</color>
+</resources>

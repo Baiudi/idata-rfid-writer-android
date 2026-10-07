@@ -1,0 +1,7 @@
+<resources>
+    <string name="app_name">iData 资产写标工具</string>
+    <string name="hint_power">写标功率(dBm，5~33，默认15)</string>
+    <string name="hint_module">模块类型: 0=UM 1=SLR 2=GX</string>
+    <string name="hint_target_bank">写标区域: 1=EPC 3=USER</string>
+    <string name="hint_start_word">起始字地址(Word)</string>
+</resources>

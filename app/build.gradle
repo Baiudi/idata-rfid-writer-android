@@ -1,0 +1,42 @@
+apply plugin: 'com.android.application'
+
+android {
+    namespace 'com.example.rfidwriter'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId "com.example.rfidwriter"
+        minSdk 24
+        targetSdk 34
+        versionCode 1
+        versionName "1.0"
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            proguardFiles getDefaultProguardFile('proguard-android-optimize.txt'), 'proguard-rules.pro'
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    implementation 'androidx.appcompat:appcompat:1.6.1'
+    implementation 'com.google.android.material:material:1.11.0'
+    implementation 'androidx.recyclerview:recyclerview:1.3.2'
+
+    // iData UHF SDK（厂商私有库）：仅当 app/libs/idata-uhf-sdk.jar 存在时才引入。
+    // 缺失时工程仍可编译打包（App 以「模拟模式」运行，用于无硬件联调/流程验证）；
+    // 接入真实 RFID 时，把厂商 jar 放入 app/libs/，并在 IdataUhfAdapter 中补全 TODO-SDK 即可。
+    def uhfJar = file('libs/idata-uhf-sdk.jar')
+    if (uhfJar.exists()) {
+        implementation files(uhfJar)
+    } else {
+        println "[build] 未检测到 app/libs/idata-uhf-sdk.jar —— 将以「模拟模式」构建（无真实 RFID，用于流程验证）。"
+    }
+}

@@ -1,0 +1,130 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="16dp">
+
+    <!-- 设备/参数设置 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <Button
+            android:id="@+id/btnConnect"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="连接UHF" />
+        <Button
+            android:id="@+id/btnDisconnect"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="断开" />
+    </LinearLayout>
+
+    <GridLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:columnCount="2"
+        android:rowCount="4"
+        android:layout_marginTop="8dp">
+
+        <TextView android:text="@string/hint_power" />
+        <EditText
+            android:id="@+id/etPower"
+            android:inputType="number"
+            android:text="15" />
+
+        <TextView android:text="@string/hint_module" />
+        <EditText
+            android:id="@+id/etModule"
+            android:inputType="number"
+            android:text="0" />
+
+        <TextView android:text="@string/hint_target_bank" />
+        <EditText
+            android:id="@+id/etBank"
+            android:inputType="number"
+            android:text="1" />
+
+        <TextView android:text="@string/hint_start_word" />
+        <EditText
+            android:id="@+id/etStartWord"
+            android:inputType="number"
+            android:text="2" />
+    </GridLayout>
+
+    <!-- 模拟模式开关：无硬件/无 SDK 时勾选，用于流程验证；接入真实 iData SDK 后取消勾选 -->
+    <CheckBox
+        android:id="@+id/chkSimulate"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="4dp"
+        android:checked="true"
+        android:text="模拟模式（无硬件/无SDK时勾选，用于流程验证）" />
+
+    <!-- 台账导入与批量写标 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp">
+        <Button
+            android:id="@+id/btnImport"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="导入台账CSV" />
+        <Button
+            android:id="@+id/btnStartWrite"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="开始批量写标" />
+    </LinearLayout>
+
+    <!-- 进度与状态 -->
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:text="状态：未连接"
+        android:textSize="14sp" />
+
+    <TextView
+        android:id="@+id/tvProgress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="进度：0 / 0"
+        android:textSize="14sp" />
+
+    <!-- 结果列表 -->
+    <androidx.recyclerview.widget.RecyclerView
+        android:id="@+id/rvResults"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="8dp" />
+
+    <!-- 同步到 dws 台账 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <Button
+            android:id="@+id/btnExport"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="导出结果JSON" />
+        <Button
+            android:id="@+id/btnSync"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="同步到dws台账" />
+    </LinearLayout>
+</LinearLayout>
