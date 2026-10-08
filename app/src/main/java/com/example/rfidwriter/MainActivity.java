@@ -48,6 +48,9 @@ public class MainActivity extends AppCompatActivity {
     private static final long INVENTORY_WINDOW_MS = 1500;  // 单标签检测窗口
     private static final long WRITE_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 3000;
+    private static final int ASSET_BANK = 1;               // 资产编号固定写入 EPC 区
+    private static final int ASSET_START = 2;              // EPC 区前 2 字为 CRC/PC
+    private static final String INFO_MAGIC = "R1";         // USER 区结构化信息前缀，便于回读识别
 
     private RfidSdk sdk = new IdataUhfAdapter();
     private ResultDbHelper db;
@@ -55,7 +58,7 @@ public class MainActivity extends AppCompatActivity {
     private ResultAdapter adapter;
     private android.widget.CheckBox chkSimulate;
 
-    private EditText etPower, etModule, etBank, etStartWord, etSingleAsset;
+    private EditText etPower, etModule, etBank, etStartWord, etSingleAsset, etLocation, etDept, etOwner;
     private TextView tvStatus, tvProgress, tvDetected, tvSingleResult;
     private Button btnStartWrite, btnSync, btnWriteSingle;
     private TagInfo lastDetectedTag;
@@ -78,6 +81,9 @@ public class MainActivity extends AppCompatActivity {
         btnSync = findViewById(R.id.btnSync);
         chkSimulate = findViewById(R.id.chkSimulate);
         etSingleAsset = findViewById(R.id.etSingleAsset);
+        etLocation = findViewById(R.id.etLocation);
+        etDept = findViewById(R.id.etDept);
+        etOwner = findViewById(R.id.etOwner);
         tvDetected = findViewById(R.id.tvDetected);
         tvSingleResult = findViewById(R.id.tvSingleResult);
         btnWriteSingle = findViewById(R.id.btnWriteSingle);
@@ -177,16 +183,16 @@ public class MainActivity extends AppCompatActivity {
         if (ledger.isEmpty()) { Toast.makeText(this, "请先导入台账", Toast.LENGTH_SHORT).show(); return; }
 
         int power = parseInt(etPower, 15);
-        int bank = parseInt(etBank, 1);
-        int startWord = parseInt(etStartWord, 2);
+        int infoBank = parseInt(etBank, 3);      // 信息写入区：默认 USER(3)
+        int infoStart = parseInt(etStartWord, 0); // 信息起始字地址：默认 0
         sdk.setPower(power); // 写单张前调低功率，避免误写邻近标签
 
         writing = true;
         btnStartWrite.setEnabled(false);
-        new Thread(() -> runBatchWrite(bank, startWord)).start();
+        new Thread(() -> runBatchWrite(infoBank, infoStart)).start();
     }
 
-    private void runBatchWrite(int bank, int startWord) {
+    private void runBatchWrite(int infoBank, int infoStart) {
         int total = ledger.size();
         int idx = 0;
         for (WriteResult item : ledger) {
@@ -198,50 +204,17 @@ public class MainActivity extends AppCompatActivity {
             try {
                 if ("success".equals(item.status)) continue; // 已成功跳过
 
-                // 1) 检测单张标签（低功率下仅一张靠近天线）
                 TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
                 if (tag == null) {
                     fail(item, "未检测到单张标签（请确保天线范围内仅一张空白标签）");
                     persistAndRefresh(item, cur, tot);
                     continue;
                 }
-
-                // 2) 尽量读取 TID 作为更精确的过滤条件（只读、出厂唯一）
                 if (tag.tid == null || tag.tid.isEmpty()) {
                     String tidHex = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
                     if (tidHex != null) tag.tid = tidHex;
                 }
-
-                // 3) 构造过滤条件
-                int fBank, fStartBit, fLenBits;
-                String fData;
-                if (tag.tid != null && !tag.tid.isEmpty()) {
-                    fBank = 2; fStartBit = 0; fLenBits = tag.tid.length() * 4; fData = tag.tid;
-                } else {
-                    String e = tag.epc.length() >= 8 ? tag.epc.substring(0, 8) : tag.epc;
-                    fBank = 1; fStartBit = 32; fLenBits = e.length() * 4; fData = e;
-                }
-
-                // 4) 过滤写入资产编号（默认按 ASCII 直写；若 SDK 要求 Hex，改用 FormatUtil.asciiToHex）
-                boolean ok = sdk.writeTagWithFilterSync(
-                        fBank, fStartBit, fLenBits, fData,
-                        bank, startWord, item.assetNo, PWD, WRITE_TIMEOUT_MS);
-                if (!ok) { fail(item, "写入失败"); persistAndRefresh(item, cur, tot); continue; }
-
-                // 5) 回读校验
-                int wordLen = (item.assetNo.length() + 3) / 4;
-                String read = sdk.readTagSync(bank, startWord, wordLen, PWD, READ_TIMEOUT_MS);
-                boolean verified = read != null && FormatUtil.hexToAscii(read).trim().equals(item.assetNo);
-                if (verified) {
-                    item.status = "success";
-                    item.tid = tag.tid == null ? "" : tag.tid;
-                    item.epc = tag.epc == null ? "" : tag.epc;
-                    item.writtenData = item.assetNo;
-                    item.writtenAt = nowIso();
-                    item.error = "";
-                } else {
-                    fail(item, "回读校验不一致 read=" + read);
-                }
+                writeOneTagDual(tag, item, infoBank, infoStart);
                 persistAndRefresh(item, cur, tot);
             } catch (Exception e) {
                 fail(item, "异常:" + e.getMessage());
@@ -255,6 +228,60 @@ public class MainActivity extends AppCompatActivity {
             int succ = db.countByStatus("success");
             setStatus("批量写标完成：成功 " + succ + " / " + total + "（失败项可重新点“开始批量写标”补写）");
         });
+    }
+
+    /**
+     * 把一条记录的【资产编号】写入 EPC 区(固定 bank1/word2)，并把【存放位置|部门|使用人】
+     * 按 UTF-8 写入 USER 区(infoBank/infoStart)，两步均做回读校验。成功后写 item 状态。
+     */
+    private void writeOneTagDual(TagInfo tag, WriteResult item, int infoBank, int infoStart) {
+        // 过滤条件（基于 TID 或 EPC 前缀），保证只写天线范围内那一张
+        String[] f = buildFilter(tag);
+        int fBank = Integer.parseInt(f[0]), fStartBit = Integer.parseInt(f[1]), fLenBits = Integer.parseInt(f[2]);
+        String fData = f[3];
+
+        // 1) EPC 区：资产编号（ASCII）
+        boolean epcOk = sdk.writeTagWithFilterSync(
+                fBank, fStartBit, fLenBits, fData,
+                ASSET_BANK, ASSET_START, item.assetNo, PWD, WRITE_TIMEOUT_MS);
+        if (!epcOk) { fail(item, "EPC(资产编号)写入失败"); return; }
+        int assetWordLen = (item.assetNo.length() + 1) / 2;
+        String rEpc = sdk.readTagSync(ASSET_BANK, ASSET_START, assetWordLen, PWD, READ_TIMEOUT_MS);
+        boolean epcV = rEpc != null && FormatUtil.hexToAscii(rEpc).trim().equals(item.assetNo);
+        if (!epcV) { fail(item, "EPC 回读不一致 read=" + rEpc); return; }
+
+        // 2) USER 区：结构化信息（UTF-8，支持中文）
+        String info = INFO_MAGIC + "|" + nz(item.location) + "|" + nz(item.dept) + "|" + nz(item.owner);
+        boolean userOk = sdk.writeTagWithFilterSync(
+                fBank, fStartBit, fLenBits, fData,
+                infoBank, infoStart, info, PWD, WRITE_TIMEOUT_MS);
+        if (!userOk) { fail(item, "USER(存放位置/部门/使用人)写入失败"); return; }
+        byte[] infoBytes = info.getBytes(StandardCharsets.UTF_8);
+        int infoWordLen = (infoBytes.length + 1) / 2;
+        String rUser = sdk.readTagSync(infoBank, infoStart, infoWordLen, PWD, READ_TIMEOUT_MS);
+        boolean userV = rUser != null && FormatUtil.hexToUtf8(rUser).equals(info);
+        if (!userV) { fail(item, "USER 回读不一致 read=" + rUser); return; }
+
+        // 全部通过
+        item.status = "success";
+        item.tid = tag.tid == null ? "" : tag.tid;
+        item.epc = tag.epc == null ? "" : tag.epc;
+        item.writtenData = item.assetNo + " | " + info;
+        item.writtenAt = nowIso();
+        item.error = "";
+    }
+
+    /** 基于检测到的标签构造过滤条件（TID 优先，回退到 EPC 前缀） */
+    private String[] buildFilter(TagInfo tag) {
+        int fBank, fStartBit, fLenBits;
+        String fData;
+        if (tag.tid != null && !tag.tid.isEmpty()) {
+            fBank = 2; fStartBit = 0; fLenBits = tag.tid.length() * 4; fData = tag.tid;
+        } else {
+            String e = tag.epc != null && tag.epc.length() >= 8 ? tag.epc.substring(0, 8) : tag.epc;
+            fBank = 1; fStartBit = 32; fLenBits = e.length() * 4; fData = e;
+        }
+        return new String[]{String.valueOf(fBank), String.valueOf(fStartBit), String.valueOf(fLenBits), fData};
     }
 
     /** 低功率短窗口盘点，收集到的【唯一】标签；多于/少于一张返回 null */
@@ -297,15 +324,18 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    /** 把输入框中的资产编号写入天线范围内【唯一】一张标签，并回读校验 */
+    /** 把输入框中的资产编号 + 存放位置/部门/使用人 写入天线范围内【唯一】一张标签 */
     private void writeSingle() {
         if (writing) return;
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
-        final String data = etSingleAsset.getText().toString().trim();
-        if (data.isEmpty()) { Toast.makeText(this, "请先输入要写入的资产编号/数据", Toast.LENGTH_SHORT).show(); return; }
+        final String asset = etSingleAsset.getText().toString().trim();
+        if (asset.isEmpty()) { Toast.makeText(this, "请先输入资产编号", Toast.LENGTH_SHORT).show(); return; }
 
-        int bank = parseInt(etBank, 1);
-        int startWord = parseInt(etStartWord, 2);
+        final String location = etLocation.getText().toString().trim();
+        final String dept = etDept.getText().toString().trim();
+        final String owner = etOwner.getText().toString().trim();
+        int infoBank = parseInt(etBank, 3);
+        int infoStart = parseInt(etStartWord, 0);
         sdk.setPower(parseInt(etPower, 15)); // 写单张前调低功率，避免误写邻近标签
 
         writing = true;
@@ -317,45 +347,28 @@ public class MainActivity extends AppCompatActivity {
                 if (tag == null) {
                     resultMsg = "失败：未检测到单张标签（请确保仅一张标签靠近天线）";
                 } else {
-                    // 尽量读取 TID 作为更精确的过滤条件
                     if (tag.tid == null || tag.tid.isEmpty()) {
                         String tidHex = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
                         if (tidHex != null) tag.tid = tidHex;
                     }
-                    int fBank, fStartBit, fLenBits;
-                    String fData;
-                    if (tag.tid != null && !tag.tid.isEmpty()) {
-                        fBank = 2; fStartBit = 0; fLenBits = tag.tid.length() * 4; fData = tag.tid;
+                    WriteResult wr = new WriteResult();
+                    wr.assetNo = asset;
+                    wr.location = location;
+                    wr.dept = dept;
+                    wr.owner = owner;
+                    wr.model = "";
+                    wr.remark = "单张写入";
+                    wr.tid = tag.tid == null ? "" : tag.tid;
+                    wr.epc = tag.epc == null ? "" : tag.epc;
+                    writeOneTagDual(tag, wr, infoBank, infoStart);
+                    if ("success".equals(wr.status)) {
+                        resultMsg = "成功：资产编号已写 EPC，存放位置/部门/使用人已写 USER，回读校验通过";
                     } else {
-                        String e = tag.epc.length() >= 8 ? tag.epc.substring(0, 8) : tag.epc;
-                        fBank = 1; fStartBit = 32; fLenBits = e.length() * 4; fData = e;
+                        resultMsg = "失败：" + wr.error;
                     }
-                    boolean ok = sdk.writeTagWithFilterSync(
-                            fBank, fStartBit, fLenBits, fData,
-                            bank, startWord, data, PWD, WRITE_TIMEOUT_MS);
-                    if (!ok) {
-                        resultMsg = "失败：写入未成功";
-                    } else {
-                        int wordLen = (data.length() + 3) / 4;
-                        String read = sdk.readTagSync(bank, startWord, wordLen, PWD, READ_TIMEOUT_MS);
-                        boolean verified = read != null && FormatUtil.hexToAscii(read).trim().equals(data);
-                        resultMsg = verified
-                                ? "成功：已写入「" + data + "」并回读校验通过"
-                                : "失败：回读不一致 read=" + read;
-                        // 同步落到数据库与结果列表，便于统一导出
-                        WriteResult wr = new WriteResult();
-                        wr.assetNo = data;
-                        wr.dept = ""; wr.model = ""; wr.remark = "单张写入";
-                        wr.tid = tag.tid == null ? "" : tag.tid;
-                        wr.epc = tag.epc == null ? "" : tag.epc;
-                        wr.writtenData = data;
-                        wr.writtenAt = nowIso();
-                        if (verified) { wr.status = "success"; wr.error = ""; }
-                        else { wr.status = "failed"; wr.error = resultMsg; }
-                        db.upsert(wr);
-                        ledger.add(wr);
-                        runOnUiThread(() -> { adapter.notifyDataSetChanged(); refreshProgress(); });
-                    }
+                    db.upsert(wr);
+                    ledger.add(wr);
+                    runOnUiThread(() -> { adapter.notifyDataSetChanged(); refreshProgress(); });
                 }
             } catch (Exception e) {
                 resultMsg = "异常：" + e.getMessage();
@@ -444,7 +457,8 @@ public class MainActivity extends AppCompatActivity {
         @Override public void onBindViewHolder(@NonNull VH h, int i) {
             WriteResult r = data.get(i);
             h.title.setText(r.assetNo + "  [" + r.status + "]");
-            h.sub.setText("部门:" + r.dept + " 型号:" + r.model + " | TID:" + r.tid + " | " + r.error);
+            h.sub.setText("位置:" + r.location + " 部门:" + r.dept + " 使用人:" + r.owner
+                    + " | TID:" + r.tid + " | " + r.error);
             int color = r.status.equals("success") ? 0xFF2E7D32 :
                         r.status.equals("failed") ? 0xFFC62828 : 0xFFF9A825;
             h.title.setTextColor(color);

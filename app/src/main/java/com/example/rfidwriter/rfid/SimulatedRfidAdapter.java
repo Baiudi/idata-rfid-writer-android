@@ -108,8 +108,8 @@ public class SimulatedRfidAdapter implements RfidSdk {
             // TID 区：返回虚拟 TID（已是 Hex）
             data = mTid.get();
         } else if ((bank + ":" + wordAddr).equals(mLastWriteKey.get())) {
-            // 回读校验：返回写入内容的 ASCII-Hex
-            data = FormatUtil.asciiToHex(mLastWriteVal.get());
+            // 回读校验：返回写入内容的 UTF-8 Hex（兼容 ASCII 资产编号与中文 USER 信息）
+            data = FormatUtil.utf8ToHex(mLastWriteVal.get());
         } else {
             data = randHex(Math.max(4, wordLen * 4));
         }

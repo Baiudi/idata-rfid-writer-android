@@ -5,8 +5,10 @@ package com.example.rfidwriter.db;
  * 同时用于导出 JSON（供 PC 端 dws 同步脚本消费）。
  */
 public class WriteResult {
-    public String assetNo;     // 资产编号（台账主键，与 dws 台账关联键）
-    public String dept;        // 部门
+    public String assetNo;     // 资产编号（台账主键，与 dws 台账关联键，固定写入 EPC 区）
+    public String dept;        // 部门（写入 USER 区）
+    public String location;    // 存放位置（写入 USER 区）
+    public String owner;       // 使用人（写入 USER 区）
     public String model;       // 型号
     public String remark;      // 备注
     public String tid;         // 标签 TID（出厂唯一，物理身份证）

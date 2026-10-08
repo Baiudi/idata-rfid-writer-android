@@ -1,6 +1,6 @@
-﻿asset_no,dept,model,remark
-202600001,IT部,Dell OptiPlex 7080,办公台式机
-202600002,财务部,HP LaserJet M454,打印机
-202600003,生产部,研华工控机 IPC-610,产线控制
-202600004,行政部,ThinkPad T14,笔记本
-202600005,研发部,示波器 Keysight DSOX1204G,测试仪器
+﻿asset_no,location,dept,owner,model,remark
+202600001,A栋3楼机房,IT部,王凯明,Dell OptiPlex 7080,办公台式机
+202600002,B栋1楼财务室,财务部,李娜,HP LaserJet M454,打印机
+202600003,C栋2楼产线,生产部,张伟,研华工控机 IPC-610,产线控制
+202600004,A栋5楼办公区,行政部,赵敏,ThinkPad T14,笔记本
+202600005,D栋实验室,研发部,陈强,示波器 Keysight DSOX1204G,测试仪器
