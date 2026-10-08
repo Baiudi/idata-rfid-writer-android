@@ -21,22 +21,24 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      # 不依赖 runner 预装状态：自带下载 Google 官方 cmdline-tools，再用它装齐所需包
+      # 使用 runner 预装的 SDK（ANDROID_HOME），只补齐缺的包；
+      # ANDROID_HOME 与 ANDROID_SDK_ROOT 必须指向同一路径，否则 AGP 报错拒绝编译
       - name: Set up Android SDK
         run: |
-          SDK=$HOME/android-sdk
-          SDKM=$SDK/cmdline-tools/latest/bin/sdkmanager
+          SDK="${ANDROID_HOME:-/usr/local/lib/android/sdk}"
+          echo "Using SDK at: $SDK"
+          SDKM="$SDK/cmdline-tools/latest/bin/sdkmanager"
           if [ ! -x "$SDKM" ]; then
-            echo "Downloading Android cmdline-tools..."
+            echo "cmdline-tools missing, downloading from Google..."
             curl -fsSL -o /tmp/clt.zip https://dl.google.com/android/repository/commandlinetools-linux-11076708_latest.zip
             mkdir -p "$SDK/cmdline-tools" /tmp/clt
             unzip -q /tmp/clt.zip -d /tmp/clt
             mv /tmp/clt/cmdline-tools "$SDK/cmdline-tools/latest"
           fi
           yes | "$SDKM" --licenses > /dev/null || true
-          "$SDKM" --install "platform-tools" > /dev/null
           "$SDKM" --install "platforms;android-34" > /dev/null
           "$SDKM" --install "build-tools;34.0.0" > /dev/null
+          echo "ANDROID_HOME=$SDK" >> "$GITHUB_ENV"
           echo "ANDROID_SDK_ROOT=$SDK" >> "$GITHUB_ENV"
 
       - name: Grant execute permission for gradlew
