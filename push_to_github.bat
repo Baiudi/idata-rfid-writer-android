@@ -1,48 +1,69 @@
 @echo off
-chcp 65001 >nul
 cd /d %~dp0
 
 echo.
 echo ============================================================
-echo  iData T1 UHF 写标工具 —— 一键推送到 GitHub（触发云端构建）
+echo  iData T1 UHF RFID Writer - Push to GitHub (cloud build)
 echo ============================================================
 echo.
-echo  前置条件：
-echo   1. 已在 github.com 新建一个【空】仓库（不要带 README/.gitignore）
-echo   2. 本机已安装 Git 并登录 GitHub
-echo   3. 已复制该仓库的 HTTPS 地址
+echo  BEFORE you run this script:
+echo    1. Create an EMPTY repository on github.com
+echo       (do NOT add README / .gitignore / license)
+echo    2. Copy the repo HTTPS URL, for example:
+echo       https://github.com/yourname/idata-rfid-writer-android.git
 echo.
-set /p REPO_URL=请粘贴 GitHub 仓库 HTTPS 地址（形如 https://github.com/你/仓库名.git）：
+
+rem ---- find git.exe: system PATH first, then WorkBuddy portable git ----
+set "GITEXE=git"
+where git >nul 2>&1
+if errorlevel 1 (
+    if exist "C:\Users\MC00211\.workbuddy\binaries\PortableGit\versions\1.2.0\mingw64\bin\git.exe" (
+        set "GITEXE=C:\Users\MC00211\.workbuddy\binaries\PortableGit\versions\1.2.0\mingw64\bin\git.exe"
+    ) else (
+        echo [ERROR] Git not found on this PC.
+        echo         Install Git for Windows from: https://git-scm.com/download/win
+        pause
+        exit /b 1
+    )
+)
+
+set /p REPO_URL=Paste your GitHub repo HTTPS URL then press Enter: 
 
 if "%REPO_URL%"=="" (
-    echo 未输入地址，已退出。
+    echo [ERROR] Empty URL. Exit.
     pause
     exit /b 1
 )
 
-git remote remove origin >nul 2>&1
-git remote add origin %REPO_URL%
-git branch -M main
+"%GITEXE%" remote remove origin >nul 2>&1
+"%GITEXE%" remote add origin %REPO_URL%
+"%GITEXE%" branch -M main
 
 echo.
-echo 正在推送到 main 分支（首次会请求 GitHub 登录/令牌）...
+echo Pushing to main ... first time may ask you to log in to GitHub.
+echo   - Username: your GitHub username
+echo   - Password: use a Personal Access Token, NOT your account password
+echo     (GitHub - Settings - Developer settings - Personal access tokens)
 echo.
-git push -u origin main
+"%GITEXE%" push -u origin main
 
 if errorlevel 1 (
     echo.
-    echo 推送失败，请检查：
-    echo   1）仓库地址是否正确
-    echo   2）本机是否已登录 GitHub（或用 Personal Access Token 作为密码）
-    echo   3）仓库是否为【空】仓库（不能带初始 README）
+    echo [ERROR] Push failed. Check:
+    echo   1. Repo URL is correct and the repo is EMPTY
+    echo   2. You are logged in to GitHub (use PAT as password)
+    echo   3. Network can reach github.com
     pause
     exit /b 1
 )
 
 echo.
-echo 推送成功！
-echo 请到 GitHub 仓库 → Actions → Build APK 等待构建完成，
-echo 然后在 Artifacts 下载 app-debug-apk，解压即得到 app-debug.apk。
-echo 详细步骤见 DEPLOY.md。
+echo [OK] Push succeeded!
+echo.
+echo NEXT STEP:
+echo   Open your repo on github.com - Actions tab - "Build APK"
+echo   - Run workflow, wait 5-10 minutes, then download the
+echo   artifact "app-debug-apk" and unzip it to get app-debug.apk.
+echo   Details: see DEPLOY.md
 echo.
 pause
