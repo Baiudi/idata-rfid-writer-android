@@ -21,21 +21,18 @@ jobs:
           distribution: 'temurin'
           java-version: '17'
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
-
+      # ubuntu-latest runner 自带 Android SDK（ANDROID_HOME 已预设），无需第三方安装 action
       - name: Install Android SDK packages
         run: |
-          yes | sdkmanager --licenses || true
+          sdkmanager --version
+          yes | sdkmanager --licenses > /dev/null || true
           sdkmanager "platform-tools" "platforms;android-34" "build-tools;34.0.0"
 
       - name: Grant execute permission for gradlew
         run: chmod +x gradlew
 
       - name: Build debug APK
-        env:
-          ANDROID_SDK_ROOT: ${{ env.ANDROID_HOME }}
-        run: ./gradlew assembleDebug --no-daemon
+        run: ./gradlew assembleDebug --no-daemon --stacktrace
 
       - name: Upload APK artifact
         uses: actions/upload-artifact@v4
