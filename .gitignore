@@ -1,18 +1,2 @@
-# Gradle / Android build
-.gradle/
-build/
-app/build/
-local.properties
-
-# 第三方 SDK（不应入库，需各自从厂商获取）
-app/libs/*.jar
-app/src/main/jniLibs/**/*.so
-
-# 工具缓存
-.wrapperdl/
-__pycache__/
-*.pyc
-
-# OS
-.DS_Store
-Thumbs.db
+apk/
+*.zip
