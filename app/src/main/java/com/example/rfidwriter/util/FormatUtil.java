@@ -122,7 +122,7 @@ public class FormatUtil {
     /** 解析台账 CSV（兼容旧格式，内部转通用表格解析） */
     public static List<WriteResult> parseLedgerCsv(String content) {
         List<List<String>> rows = new ArrayList<>();
-        if (content == null || content.isEmpty()) return rows;
+        if (content == null || content.isEmpty()) return new ArrayList<>();
         String[] lines = content.split("\\r?\\n");
         for (String line : lines) {
             if (line.trim().isEmpty()) continue;
