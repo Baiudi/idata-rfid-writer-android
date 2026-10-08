@@ -66,4 +66,59 @@ public interface RfidSdk {
                            String pwd, WriteCallback cb);
 
     boolean isConnected();
+
+    /**
+     * 同步读：阻塞等待回调，最多 timeoutMs。
+     * 成功返回十六进制数据字符串；失败或超时返回 null。
+     * （接口 default 方法，适配器无需另行实现）
+     */
+    default String readTagSync(int bank, int wordAddr, int wordLen, String pwd, long timeoutMs) {
+        final Object lock = new Object();
+        final String[] out = {null};
+        final boolean[] done = {false};
+        readTag(bank, wordAddr, wordLen, pwd, (ok, dataHex, msg) -> {
+            synchronized (lock) {
+                out[0] = ok ? dataHex : null;
+                done[0] = true;
+                lock.notifyAll();
+            }
+        });
+        synchronized (lock) {
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            while (!done[0]) {
+                long remain = deadline - System.currentTimeMillis();
+                if (remain <= 0) break;
+                try { lock.wait(remain); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+        return out[0];
+    }
+
+    /**
+     * 同步带过滤写：阻塞等待回调，最多 timeoutMs。
+     * 成功返回 true；失败或超时返回 false。
+     */
+    default boolean writeTagWithFilterSync(int fBank, int fStartBit, int fLenBits, String fData,
+                                           int writeBank, int startWord, String writeData,
+                                           String pwd, long timeoutMs) {
+        final Object lock = new Object();
+        final boolean[] ok = {false};
+        final boolean[] done = {false};
+        writeTagWithFilter(fBank, fStartBit, fLenBits, fData, writeBank, startWord, writeData, pwd, (success, msg) -> {
+            synchronized (lock) {
+                ok[0] = success;
+                done[0] = true;
+                lock.notifyAll();
+            }
+        });
+        synchronized (lock) {
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            while (!done[0]) {
+                long remain = deadline - System.currentTimeMillis();
+                if (remain <= 0) break;
+                try { lock.wait(remain); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+        return ok[0];
+    }
 }
