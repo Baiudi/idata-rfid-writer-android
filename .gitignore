@@ -1,2 +1,4 @@
 apk/
 *.zip
+__pycache__/
+local.properties
