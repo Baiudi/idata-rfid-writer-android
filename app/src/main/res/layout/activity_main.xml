@@ -5,6 +5,18 @@
     android:orientation="vertical"
     android:padding="16dp">
 
+    <!-- 上半部分：可滚动区域（参数/单张写入/批量写标/状态进度） -->
+    <ScrollView
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:fillViewport="true">
+
+        <LinearLayout
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:orientation="vertical">
+
     <!-- 设备/参数设置 -->
     <LinearLayout
         android:layout_width="match_parent"
@@ -169,13 +181,16 @@
         android:text="进度：0 / 0"
         android:textSize="14sp" />
 
-    <!-- 结果列表 -->
+        </LinearLayout>
+    </ScrollView>
+
+    <!-- 结果列表（固定高度，不参与滚动区域，内部自己滚动） -->
     <androidx.recyclerview.widget.RecyclerView
         android:id="@+id/rvResults"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:layout_marginTop="8dp" />
+        android:layout_height="200dp"
+        android:layout_marginTop="8dp"
+        android:nestedScrollingEnabled="true" />
 
     <!-- 同步到 dws 台账 -->
     <LinearLayout
