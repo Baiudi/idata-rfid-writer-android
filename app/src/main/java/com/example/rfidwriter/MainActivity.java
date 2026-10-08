@@ -10,6 +10,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
@@ -44,13 +45,14 @@ public class MainActivity extends AppCompatActivity {
 
     private static final String TAG = "MainActivity";
     private static final int REQ_PICK_CSV = 1001;
+    private static final int REQ_PICK_LEDGER = 1002;
     private static final String PWD = "00000000";          // 默认访问密码
     private static final long INVENTORY_WINDOW_MS = 1500;  // 单标签检测窗口
     private static final long WRITE_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 3000;
     private static final int ASSET_BANK = 1;               // 资产编号固定写入 EPC 区
     private static final int ASSET_START = 2;              // EPC 区前 2 字为 CRC/PC
-    private static final String INFO_MAGIC = "R1";         // USER 区结构化信息前缀，便于回读识别
+    private static final String INFO_MAGIC = "R2";         // USER 区结构化信息前缀（v2：八个自定义字段）
 
     private RfidSdk sdk = new IdataUhfAdapter();
     private ResultDbHelper db;
@@ -111,7 +113,9 @@ public class MainActivity extends AppCompatActivity {
             sdk.release();
             setStatus("已断开");
         });
-        findViewById(R.id.btnImport).setOnClickListener(v -> pickCsv());
+        findViewById(R.id.btnImport).setOnClickListener(v -> pickLedger());
+        findViewById(R.id.btnTemplate).setOnClickListener(v -> exportTemplate());
+        findViewById(R.id.btnAddSingle).setOnClickListener(v -> showAddDialog());
         btnStartWrite.setOnClickListener(v -> startBatchWrite());
         findViewById(R.id.btnExport).setOnClickListener(v -> exportJson());
         btnSync.setOnClickListener(v -> syncToDws());
@@ -143,13 +147,39 @@ public class MainActivity extends AppCompatActivity {
         }));
     }
 
-    // ----------------- 导入台账 CSV -----------------
+    // ----------------- 导入台账（Excel/CSV）与模板 -----------------
 
-    private void pickCsv() {
+    private void pickLedger() {
         Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
         i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("text/*");
-        startActivityForResult(i, REQ_PICK_CSV);
+        i.setType("*/*");
+        startActivityForResult(i, REQ_PICK_LEDGER);
+    }
+
+    /** 导出批量导入 Excel 模板（.xlsx）到应用外部文件目录 */
+    private void exportTemplate() {
+        try {
+            java.io.File dir = getExternalFilesDir(null);
+            if (dir == null) dir = getFilesDir();
+            java.io.File f = new java.io.File(dir, "asset-import-template.xlsx");
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+            fos.write(FormatUtil.buildTemplateXlsx());
+            fos.close();
+            Toast.makeText(this, "模板已导出:\n" + f.getAbsolutePath()
+                    + "\n用电脑 Excel 填写后点「导入Excel/CSV」导入", Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "导出模板失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    private String queryDisplayName(Uri uri) {
+        try (android.database.Cursor c = getContentResolver().query(uri, null, null, null, null)) {
+            if (c != null && c.moveToFirst()) {
+                int idx = c.getColumnIndex(android.provider.OpenableColumns.DISPLAY_NAME);
+                if (idx >= 0) return c.getString(idx);
+            }
+        } catch (Exception ignored) {}
+        return null;
     }
 
     @Override
@@ -163,16 +193,65 @@ public class MainActivity extends AppCompatActivity {
                 String line;
                 while ((line = r.readLine()) != null) sb.append(line).append("\n");
                 List<WriteResult> parsed = FormatUtil.parseLedgerCsv(sb.toString());
-                ledger.clear();
-                ledger.addAll(parsed);
-                for (WriteResult w : ledger) db.upsert(w);
-                adapter.notifyDataSetChanged();
-                refreshProgress();
-                Toast.makeText(this, "导入 " + parsed.size() + " 条台账", Toast.LENGTH_SHORT).show();
+                importParsed(parsed);
             } catch (Exception e) {
                 Toast.makeText(this, "读取 CSV 失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
             }
+        } else if (req == REQ_PICK_LEDGER && res == Activity.RESULT_OK && data != null) {
+            Uri uri = data.getData();
+            String name = queryDisplayName(uri);
+            boolean isXlsx = name != null && name.toLowerCase(Locale.ROOT).endsWith(".xlsx");
+            try {
+                List<WriteResult> parsed;
+                if (isXlsx) {
+                    java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                    byte[] buf = new byte[8192];
+                    try (java.io.InputStream in = getContentResolver().openInputStream(uri)) {
+                        int n;
+                        while ((n = in.read(buf)) > 0) bos.write(buf, 0, n);
+                    }
+                    parsed = FormatUtil.parseLedgerXlsx(bos.toByteArray());
+                } else {
+                    StringBuilder sb = new StringBuilder();
+                    try (BufferedReader r = new BufferedReader(new InputStreamReader(
+                            getContentResolver().openInputStream(uri), StandardCharsets.UTF_8))) {
+                        String line;
+                        while ((line = r.readLine()) != null) sb.append(line).append("\n");
+                    }
+                    parsed = FormatUtil.parseLedgerCsv(sb.toString());
+                }
+                importParsed(parsed);
+            } catch (Exception e) {
+                Toast.makeText(this, "导入失败: " + e.getMessage(), Toast.LENGTH_LONG).show();
+            }
         }
+    }
+
+    /** 统一入库：编码为空自动生成，落库并刷新列表 */
+    private void importParsed(List<WriteResult> parsed) {
+        if (parsed == null || parsed.isEmpty()) {
+            Toast.makeText(this, "未解析到有效数据（表头需含：资产名称/资产编码等列）", Toast.LENGTH_LONG).show();
+            return;
+        }
+        for (WriteResult w : parsed) {
+            if (w.assetNo == null || w.assetNo.isEmpty()) w.assetNo = genAssetNo();
+            ledger.add(w);
+            db.upsert(w);
+        }
+        adapter.notifyDataSetChanged();
+        refreshProgress();
+        Toast.makeText(this, "导入 " + parsed.size() + " 条台账（编码为空的已自动生成）", Toast.LENGTH_SHORT).show();
+    }
+
+    /** 自动生成资产编码：yyyyMMddHHmmss + 3 位随机，查重后返回 */
+    private String genAssetNo() {
+        SimpleDateFormat f = new SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA);
+        java.util.Random rnd = new java.util.Random();
+        for (int i = 0; i < 10; i++) {
+            String code = f.format(new Date()) + String.format(Locale.ROOT, "%03d", rnd.nextInt(1000));
+            if (!db.exists(code)) return code;
+        }
+        return f.format(new Date()) + System.currentTimeMillis() % 1000;
     }
 
     // ----------------- 批量写标 -----------------
@@ -250,8 +329,11 @@ public class MainActivity extends AppCompatActivity {
         boolean epcV = rEpc != null && FormatUtil.hexToAscii(rEpc).trim().equals(item.assetNo);
         if (!epcV) { fail(item, "EPC 回读不一致 read=" + rEpc); return; }
 
-        // 2) USER 区：结构化信息（UTF-8，支持中文）
-        String info = INFO_MAGIC + "|" + nz(item.location) + "|" + nz(item.dept) + "|" + nz(item.owner);
+        // 2) USER 区：结构化信息（UTF-8，支持中文），v2 格式：R2|名称|规格型号|分类|购置日期|购置价格|部门|使用人|存放地点|备注
+        String info = INFO_MAGIC
+                + "|" + nz(item.assetName) + "|" + nz(item.model) + "|" + nz(item.category)
+                + "|" + nz(item.purchaseDate) + "|" + nz(item.purchasePrice)
+                + "|" + nz(item.dept) + "|" + nz(item.owner) + "|" + nz(item.location) + "|" + nz(item.remark);
         boolean userOk = sdk.writeTagWithFilterSync(
                 fBank, fStartBit, fLenBits, fData,
                 infoBank, infoStart, info, PWD, WRITE_TIMEOUT_MS);
@@ -324,25 +406,18 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    /** 把输入框中的资产编号 + 存放位置/部门/使用人 写入天线范围内【唯一】一张标签 */
-    private void writeSingle() {
+    /** 单张写标共享流程：检测唯一标签 -> EPC 写编码 -> USER 写全部信息 -> 落库刷新 */
+    private void writeOneInBackground(WriteResult wr) {
         if (writing) return;
-        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
-        final String asset = etSingleAsset.getText().toString().trim();
-        if (asset.isEmpty()) { Toast.makeText(this, "请先输入资产编号", Toast.LENGTH_SHORT).show(); return; }
-
-        final String location = etLocation.getText().toString().trim();
-        final String dept = etDept.getText().toString().trim();
-        final String owner = etOwner.getText().toString().trim();
-        int infoBank = parseInt(etBank, 3);
-        int infoStart = parseInt(etStartWord, 0);
-        sdk.setPower(parseInt(etPower, 15)); // 写单张前调低功率，避免误写邻近标签
-
         writing = true;
         btnWriteSingle.setEnabled(false);
         new Thread(() -> {
             String resultMsg;
             try {
+                int infoBank = parseInt(etBank, 3);
+                int infoStart = parseInt(etStartWord, 0);
+                sdk.setPower(parseInt(etPower, 15)); // 写单张前调低功率，避免误写邻近标签
+
                 TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
                 if (tag == null) {
                     resultMsg = "失败：未检测到单张标签（请确保仅一张标签靠近天线）";
@@ -351,36 +426,118 @@ public class MainActivity extends AppCompatActivity {
                         String tidHex = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
                         if (tidHex != null) tag.tid = tidHex;
                     }
-                    WriteResult wr = new WriteResult();
-                    wr.assetNo = asset;
-                    wr.location = location;
-                    wr.dept = dept;
-                    wr.owner = owner;
-                    wr.model = "";
-                    wr.remark = "单张写入";
-                    wr.tid = tag.tid == null ? "" : tag.tid;
-                    wr.epc = tag.epc == null ? "" : tag.epc;
+                    wr.tid = nz(tag.tid);
+                    wr.epc = nz(tag.epc);
                     writeOneTagDual(tag, wr, infoBank, infoStart);
-                    if ("success".equals(wr.status)) {
-                        resultMsg = "成功：资产编号已写 EPC，存放位置/部门/使用人已写 USER，回读校验通过";
-                    } else {
-                        resultMsg = "失败：" + wr.error;
-                    }
-                    db.upsert(wr);
-                    ledger.add(wr);
-                    runOnUiThread(() -> { adapter.notifyDataSetChanged(); refreshProgress(); });
+                    resultMsg = "success".equals(wr.status)
+                            ? "成功：编码已写 EPC，信息已写 USER，回读校验通过"
+                            : "失败：" + wr.error;
                 }
             } catch (Exception e) {
                 resultMsg = "异常：" + e.getMessage();
             }
+            db.upsert(wr);
+            if (!ledger.contains(wr)) ledger.add(wr);
             final String msg = resultMsg;
             writing = false;
             runOnUiThread(() -> {
                 btnWriteSingle.setEnabled(true);
+                adapter.notifyDataSetChanged();
+                refreshProgress();
                 tvSingleResult.setText("单张写入结果：" + msg);
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
             });
         }).start();
+    }
+
+    /** 把单张写入区的输入写入天线范围内【唯一】一张标签 */
+    private void writeSingle() {
+        if (writing) return;
+        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+        final String asset = etSingleAsset.getText().toString().trim();
+        if (asset.isEmpty()) { Toast.makeText(this, "请先输入资产编码", Toast.LENGTH_SHORT).show(); return; }
+
+        WriteResult wr = new WriteResult();
+        wr.assetNo = asset;
+        wr.assetName = "";
+        wr.location = etLocation.getText().toString().trim();
+        wr.dept = etDept.getText().toString().trim();
+        wr.owner = etOwner.getText().toString().trim();
+        wr.remark = "单张写入";
+        writeOneInBackground(wr);
+    }
+
+    // ----------------- 单个新增（名称必填，编码自动生成） -----------------
+
+    /** 弹出新增资产对话框：资产名称必填，编码自动生成，8 个自定义字段选填 */
+    private void showAddDialog() {
+        android.widget.LinearLayout form = new android.widget.LinearLayout(this);
+        form.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = (int) (16 * getResources().getDisplayMetrics().density);
+        form.setPadding(pad, pad, pad, 0);
+
+        android.widget.EditText etName = addFormField(form, "资产名称 *（必填）");
+        android.widget.EditText etModel = addFormField(form, "规格型号");
+        android.widget.EditText etCategory = addFormField(form, "资产分类");
+        android.widget.EditText etDate = addFormField(form, "购置日期（如 2026-03-01）");
+        android.widget.EditText etPrice = addFormField(form, "购置价格");
+        android.widget.EditText etDeptF = addFormField(form, "使用部门");
+        android.widget.EditText etOwnerF = addFormField(form, "使用人员");
+        android.widget.EditText etLocF = addFormField(form, "存放地点");
+        android.widget.EditText etRemark = addFormField(form, "备注");
+
+        TextView tip = new TextView(this);
+        tip.setText("资产编码将自动生成（写入 EPC 区）");
+        tip.setTextSize(12);
+        form.addView(tip);
+
+        ScrollView scroll = new ScrollView(this);
+        scroll.addView(form);
+
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("新增资产")
+                .setView(scroll)
+                .setPositiveButton("保存并写标", (d, w) -> {
+                    String name = etName.getText().toString().trim();
+                    if (name.isEmpty()) {
+                        Toast.makeText(this, "资产名称必填", Toast.LENGTH_LONG).show();
+                        return;
+                    }
+                    WriteResult wr = new WriteResult();
+                    wr.assetName = name;
+                    wr.assetNo = genAssetNo();
+                    wr.model = etModel.getText().toString().trim();
+                    wr.category = etCategory.getText().toString().trim();
+                    wr.purchaseDate = etDate.getText().toString().trim();
+                    wr.purchasePrice = etPrice.getText().toString().trim();
+                    wr.dept = etDeptF.getText().toString().trim();
+                    wr.owner = etOwnerF.getText().toString().trim();
+                    wr.location = etLocF.getText().toString().trim();
+                    wr.remark = etRemark.getText().toString().trim();
+
+                    if (!sdk.isConnected()) {
+                        // 未连接：先保存为待写记录，连接后批量写
+                        ledger.add(wr);
+                        db.upsert(wr);
+                        adapter.notifyDataSetChanged();
+                        refreshProgress();
+                        Toast.makeText(this, "已保存（编码 " + wr.assetNo
+                                + "），未连接 UHF；连接后可点「开始批量写标」写入", Toast.LENGTH_LONG).show();
+                    } else {
+                        Toast.makeText(this, "编码 " + wr.assetNo + "，请将一张标签靠近天线…", Toast.LENGTH_SHORT).show();
+                        writeOneInBackground(wr);
+                    }
+                })
+                .setNegativeButton("取消", null)
+                .show();
+    }
+
+    private android.widget.EditText addFormField(android.widget.LinearLayout parent, String hint) {
+        android.widget.EditText et = new android.widget.EditText(this);
+        et.setHint(hint);
+        et.setSingleLine(true);
+        parent.addView(et);
+        return et;
     }
 
     private static String nz(String s) { return s == null ? "" : s; }
@@ -456,9 +613,12 @@ public class MainActivity extends AppCompatActivity {
         }
         @Override public void onBindViewHolder(@NonNull VH h, int i) {
             WriteResult r = data.get(i);
-            h.title.setText(r.assetNo + "  [" + r.status + "]");
-            h.sub.setText("位置:" + r.location + " 部门:" + r.dept + " 使用人:" + r.owner
-                    + " | TID:" + r.tid + " | " + r.error);
+            String title = (r.assetNo == null || r.assetNo.isEmpty() ? "(无编码)" : r.assetNo)
+                    + (r.assetName != null && !r.assetName.isEmpty() ? " " + r.assetName : "")
+                    + "  [" + r.status + "]";
+            h.title.setText(title);
+            h.sub.setText("部门:" + nz(r.dept) + " 使用人:" + nz(r.owner) + " 位置:" + nz(r.location)
+                    + " 分类:" + nz(r.category) + " | TID:" + r.tid + " | " + r.error);
             int color = r.status.equals("success") ? 0xFF2E7D32 :
                         r.status.equals("failed") ? 0xFFC62828 : 0xFFF9A825;
             h.title.setTextColor(color);

@@ -16,7 +16,7 @@ import java.util.List;
 public class ResultDbHelper extends SQLiteOpenHelper {
 
     private static final String DB_NAME = "rfid_writer.db";
-    private static final int DB_VERSION = 1;
+    private static final int DB_VERSION = 2;
     private static final String TABLE = "write_results";
 
     public ResultDbHelper(Context ctx) {
@@ -27,24 +27,34 @@ public class ResultDbHelper extends SQLiteOpenHelper {
     public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE " + TABLE + " (" +
                 "asset_no TEXT PRIMARY KEY, " +
-                "dept TEXT, model TEXT, remark TEXT, " +
+                "asset_name TEXT, dept TEXT, model TEXT, remark TEXT, " +
+                "category TEXT, purchase_date TEXT, purchase_price TEXT, " +
                 "tid TEXT, epc TEXT, written_data TEXT, " +
                 "status TEXT, error TEXT, written_at TEXT)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldV, int newV) {
-        db.execSQL("DROP TABLE IF EXISTS " + TABLE);
-        onCreate(db);
+        if (oldV < 2) {
+            // v2：新增字段，保留既有盘点数据
+            db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN asset_name TEXT");
+            db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN category TEXT");
+            db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN purchase_date TEXT");
+            db.execSQL("ALTER TABLE " + TABLE + " ADD COLUMN purchase_price TEXT");
+        }
     }
 
     public void upsert(WriteResult r) {
         SQLiteDatabase db = getWritableDatabase();
         ContentValues v = new ContentValues();
         v.put("asset_no", r.assetNo);
+        v.put("asset_name", r.assetName);
         v.put("dept", r.dept);
         v.put("model", r.model);
         v.put("remark", r.remark);
+        v.put("category", r.category);
+        v.put("purchase_date", r.purchaseDate);
+        v.put("purchase_price", r.purchasePrice);
         v.put("tid", r.tid);
         v.put("epc", r.epc);
         v.put("written_data", r.writtenData);
@@ -62,9 +72,13 @@ public class ResultDbHelper extends SQLiteOpenHelper {
         while (c.moveToNext()) {
             WriteResult r = new WriteResult();
             r.assetNo = c.getString(c.getColumnIndexOrThrow("asset_no"));
+            r.assetName = c.getString(c.getColumnIndexOrThrow("asset_name"));
             r.dept = c.getString(c.getColumnIndexOrThrow("dept"));
             r.model = c.getString(c.getColumnIndexOrThrow("model"));
             r.remark = c.getString(c.getColumnIndexOrThrow("remark"));
+            r.category = c.getString(c.getColumnIndexOrThrow("category"));
+            r.purchaseDate = c.getString(c.getColumnIndexOrThrow("purchase_date"));
+            r.purchasePrice = c.getString(c.getColumnIndexOrThrow("purchase_price"));
             r.tid = c.getString(c.getColumnIndexOrThrow("tid"));
             r.epc = c.getString(c.getColumnIndexOrThrow("epc"));
             r.writtenData = c.getString(c.getColumnIndexOrThrow("written_data"));
@@ -76,6 +90,16 @@ public class ResultDbHelper extends SQLiteOpenHelper {
         c.close();
         db.close();
         return list;
+    }
+
+    /** 编码是否已存在（用于自动生成时查重） */
+    public boolean exists(String assetNo) {
+        SQLiteDatabase db = getReadableDatabase();
+        Cursor c = db.query(TABLE, new String[]{"asset_no"}, "asset_no=?", new String[]{assetNo}, null, null, null);
+        boolean ok = c.getCount() > 0;
+        c.close();
+        db.close();
+        return ok;
     }
 
     public int countByStatus(String status) {
