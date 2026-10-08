@@ -55,9 +55,10 @@ public class MainActivity extends AppCompatActivity {
     private ResultAdapter adapter;
     private android.widget.CheckBox chkSimulate;
 
-    private EditText etPower, etModule, etBank, etStartWord;
-    private TextView tvStatus, tvProgress;
-    private Button btnStartWrite, btnSync;
+    private EditText etPower, etModule, etBank, etStartWord, etSingleAsset;
+    private TextView tvStatus, tvProgress, tvDetected, tvSingleResult;
+    private Button btnStartWrite, btnSync, btnWriteSingle;
+    private TagInfo lastDetectedTag;
 
     private volatile boolean writing = false;
 
@@ -76,6 +77,10 @@ public class MainActivity extends AppCompatActivity {
         btnStartWrite = findViewById(R.id.btnStartWrite);
         btnSync = findViewById(R.id.btnSync);
         chkSimulate = findViewById(R.id.chkSimulate);
+        etSingleAsset = findViewById(R.id.etSingleAsset);
+        tvDetected = findViewById(R.id.tvDetected);
+        tvSingleResult = findViewById(R.id.tvSingleResult);
+        btnWriteSingle = findViewById(R.id.btnWriteSingle);
 
         RecyclerView rv = findViewById(R.id.rvResults);
         rv.setLayoutManager(new LinearLayoutManager(this));
@@ -104,6 +109,8 @@ public class MainActivity extends AppCompatActivity {
         btnStartWrite.setOnClickListener(v -> startBatchWrite());
         findViewById(R.id.btnExport).setOnClickListener(v -> exportJson());
         btnSync.setOnClickListener(v -> syncToDws());
+        findViewById(R.id.btnDetectSingle).setOnClickListener(v -> detectSingle());
+        btnWriteSingle.setOnClickListener(v -> writeSingle());
 
         // 恢复上次未完成的记录
         ledger.addAll(db.getAll());
@@ -269,6 +276,101 @@ public class MainActivity extends AppCompatActivity {
         }
         return null;
     }
+
+    // ----------------- 单张标签写入 -----------------
+
+    /** 检测天线范围内【唯一】一张标签，并在界面显示其 TID/EPC（不写入） */
+    private void detectSingle() {
+        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+        sdk.setPower(parseInt(etPower, 15));
+        new Thread(() -> {
+            TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+            lastDetectedTag = tag;
+            runOnUiThread(() -> {
+                if (tag == null) {
+                    tvDetected.setText("检测到的标签：无（请确保天线范围内仅一张标签）");
+                } else {
+                    tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
+                            + (tag.tid != null && !tag.tid.isEmpty() ? "  TID=" + tag.tid : ""));
+                }
+            });
+        }).start();
+    }
+
+    /** 把输入框中的资产编号写入天线范围内【唯一】一张标签，并回读校验 */
+    private void writeSingle() {
+        if (writing) return;
+        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+        final String data = etSingleAsset.getText().toString().trim();
+        if (data.isEmpty()) { Toast.makeText(this, "请先输入要写入的资产编号/数据", Toast.LENGTH_SHORT).show(); return; }
+
+        int bank = parseInt(etBank, 1);
+        int startWord = parseInt(etStartWord, 2);
+        sdk.setPower(parseInt(etPower, 15)); // 写单张前调低功率，避免误写邻近标签
+
+        writing = true;
+        btnWriteSingle.setEnabled(false);
+        new Thread(() -> {
+            String resultMsg;
+            try {
+                TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+                if (tag == null) {
+                    resultMsg = "失败：未检测到单张标签（请确保仅一张标签靠近天线）";
+                } else {
+                    // 尽量读取 TID 作为更精确的过滤条件
+                    if (tag.tid == null || tag.tid.isEmpty()) {
+                        String tidHex = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
+                        if (tidHex != null) tag.tid = tidHex;
+                    }
+                    int fBank, fStartBit, fLenBits;
+                    String fData;
+                    if (tag.tid != null && !tag.tid.isEmpty()) {
+                        fBank = 2; fStartBit = 0; fLenBits = tag.tid.length() * 4; fData = tag.tid;
+                    } else {
+                        String e = tag.epc.length() >= 8 ? tag.epc.substring(0, 8) : tag.epc;
+                        fBank = 1; fStartBit = 32; fLenBits = e.length() * 4; fData = e;
+                    }
+                    boolean ok = sdk.writeTagWithFilterSync(
+                            fBank, fStartBit, fLenBits, fData,
+                            bank, startWord, data, PWD, WRITE_TIMEOUT_MS);
+                    if (!ok) {
+                        resultMsg = "失败：写入未成功";
+                    } else {
+                        int wordLen = (data.length() + 3) / 4;
+                        String read = sdk.readTagSync(bank, startWord, wordLen, PWD, READ_TIMEOUT_MS);
+                        boolean verified = read != null && FormatUtil.hexToAscii(read).trim().equals(data);
+                        resultMsg = verified
+                                ? "成功：已写入「" + data + "」并回读校验通过"
+                                : "失败：回读不一致 read=" + read;
+                        // 同步落到数据库与结果列表，便于统一导出
+                        WriteResult wr = new WriteResult();
+                        wr.assetNo = data;
+                        wr.dept = ""; wr.model = ""; wr.remark = "单张写入";
+                        wr.tid = tag.tid == null ? "" : tag.tid;
+                        wr.epc = tag.epc == null ? "" : tag.epc;
+                        wr.writtenData = data;
+                        wr.writtenAt = nowIso();
+                        if (verified) { wr.status = "success"; wr.error = ""; }
+                        else { wr.status = "failed"; wr.error = resultMsg; }
+                        db.upsert(wr);
+                        ledger.add(wr);
+                        runOnUiThread(() -> { adapter.notifyDataSetChanged(); refreshProgress(); });
+                    }
+                }
+            } catch (Exception e) {
+                resultMsg = "异常：" + e.getMessage();
+            }
+            final String msg = resultMsg;
+            writing = false;
+            runOnUiThread(() -> {
+                btnWriteSingle.setEnabled(true);
+                tvSingleResult.setText("单张写入结果：" + msg);
+                Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
+            });
+        }).start();
+    }
+
+    private static String nz(String s) { return s == null ? "" : s; }
 
     // ----------------- 导出 / 同步 -----------------
 

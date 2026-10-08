@@ -65,6 +65,53 @@
         android:checked="true"
         android:text="模拟模式（无硬件/无SDK时勾选，用于流程验证）" />
 
+    <!-- 单张标签写入 -->
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:textStyle="bold"
+        android:text="@string/single_section" />
+
+    <EditText
+        android:id="@+id/etSingleAsset"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:inputType="text"
+        android:hint="@string/hint_single_asset" />
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal">
+        <Button
+            android:id="@+id/btnDetectSingle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/btn_detect_single" />
+        <Button
+            android:id="@+id/btnWriteSingle"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="@string/btn_write_single" />
+    </LinearLayout>
+
+    <TextView
+        android:id="@+id/tvDetected"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/tv_detected"
+        android:textSize="13sp" />
+
+    <TextView
+        android:id="@+id/tvSingleResult"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/tv_single_result"
+        android:textSize="13sp" />
+
     <!-- 台账导入与批量写标 -->
     <LinearLayout
         android:layout_width="match_parent"

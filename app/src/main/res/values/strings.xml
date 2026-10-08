@@ -4,4 +4,10 @@
     <string name="hint_module">模块类型: 0=UM 1=SLR 2=GX</string>
     <string name="hint_target_bank">写标区域: 1=EPC 3=USER</string>
     <string name="hint_start_word">起始字地址(Word)</string>
+    <string name="single_section">—— 单张标签写入 ——</string>
+    <string name="hint_single_asset">要写入的资产编号/数据(ASCII)</string>
+    <string name="btn_detect_single">检测单张标签</string>
+    <string name="btn_write_single">写入这张标签</string>
+    <string name="tv_detected">检测到的标签：无</string>
+    <string name="tv_single_result">单张写入结果：未操作</string>
 </resources>
