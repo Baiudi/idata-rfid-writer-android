@@ -91,7 +91,12 @@ public class FormatUtil {
                 Log.w("FormatUtil", "serialize row fail: " + e.getMessage());
             }
         }
-        return arr.toString(2);
+        try {
+            return arr.toString(2);
+        } catch (Exception e) {
+            Log.w("FormatUtil", "json serialize fail: " + e.getMessage());
+            return arr.toString();
+        }
     }
 
     // ----------------- 内部辅助 -----------------
