@@ -941,6 +941,7 @@ public class MainActivity extends AppCompatActivity {
      */
     private String saveToDownloads(String fileName, byte[] data) {
         try {
+            String downPath;
             if (Build.VERSION.SDK_INT >= 29) {
                 android.content.ContentValues cv = new android.content.ContentValues();
                 cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName);
@@ -956,7 +957,7 @@ public class MainActivity extends AppCompatActivity {
                 cv.clear();
                 cv.put(android.provider.MediaStore.Downloads.IS_PENDING, 0);
                 getContentResolver().update(uri, cv, null, null);
-                return "下载/RFID盘点/" + fileName;
+                downPath = "下载/RFID盘点/" + fileName;
             } else {
                 java.io.File dir = new java.io.File(
                         Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
@@ -964,12 +965,35 @@ public class MainActivity extends AppCompatActivity {
                 if (!dir.exists() && !dir.mkdirs()) return null;
                 java.io.File f = new java.io.File(dir, fileName);
                 try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f)) { fos.write(data); }
-                return f.getAbsolutePath();
+                downPath = f.getAbsolutePath();
             }
+            // 顺便复制一份到模拟器/设备的「共享文件夹」（雷电 LDPlayer 的 /mnt/shared），
+            // 这样 PC 端共享目录能直接看到，无需再进安卓文件管理。真机无此目录则静默跳过。
+            String shared = copyToShared(fileName, data);
+            if (shared != null) {
+                return downPath + "\n（已同步到雷电共享文件夹，电脑端可直接取用）";
+            }
+            return downPath;
         } catch (Exception e) {
             Log.w(TAG, "saveToDownloads failed: " + e);
             return null;
         }
+    }
+
+    /** 尝试把文件复制到 /mnt/shared（雷电等模拟器的 PC 共享目录）；不存在则跳过 */
+    private String copyToShared(String fileName, byte[] data) {
+        String[] roots = {"/mnt/shared/Download", "/mnt/shared"};
+        for (String r : roots) {
+            java.io.File d = new java.io.File(r);
+            if (d.isDirectory()) {
+                try {
+                    java.io.File f = new java.io.File(d, fileName);
+                    try (java.io.FileOutputStream o = new java.io.FileOutputStream(f)) { o.write(data); }
+                    return f.getAbsolutePath();
+                } catch (Exception ignored) {}
+            }
+        }
+        return null;
     }
 
     private static String guessMime(String name) {
