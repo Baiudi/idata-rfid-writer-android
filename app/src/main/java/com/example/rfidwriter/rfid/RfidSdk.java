@@ -45,6 +45,12 @@ public interface RfidSdk {
     void startInventory(InventoryCallback cb);
     void stopInventory();
 
+    /**
+     * LED 闪烁提示（标签定位时帮助肉眼快速找到目标标签）。
+     * 默认空实现；真实适配器按 iData SDK 能力覆盖。
+     */
+    default void setLedBlink(boolean on) { }
+
     /** 按【Word】地址读取某 Bank 的数据，返回十六进制字符串 */
     void readTag(int bank, int wordAddr, int wordLen, String pwd, ReadCallback cb);
 

@@ -4,6 +4,8 @@ import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
 import android.os.Bundle;
+import android.os.Handler;
+import android.os.Looper;
 import android.util.Log;
 import android.view.LayoutInflater;
 import android.view.View;
@@ -121,6 +123,14 @@ public class MainActivity extends AppCompatActivity {
         btnSync.setOnClickListener(v -> syncToDws());
         findViewById(R.id.btnDetectSingle).setOnClickListener(v -> detectSingle());
         btnWriteSingle.setOnClickListener(v -> writeSingle());
+        findViewById(R.id.btnInventory).setOnClickListener(v -> toggleInventory());
+        findViewById(R.id.btnLocate).setOnClickListener(v -> {
+            if (lastDetectedTag != null && !nz(lastDetectedTag.epc).isEmpty()) {
+                locateTag(lastDetectedTag.epc);
+            } else {
+                Toast.makeText(this, "请先「检测单张标签」或从盘点结果中点击要定位的标签", Toast.LENGTH_LONG).show();
+            }
+        });
 
         // 恢复上次未完成的记录
         ledger.addAll(db.getAll());
@@ -465,6 +475,232 @@ public class MainActivity extends AppCompatActivity {
         wr.owner = etOwner.getText().toString().trim();
         wr.remark = "单张写入";
         writeOneInBackground(wr);
+    }
+
+    // ----------------- 盘点（持续群读）与标签定位 -----------------
+
+    /** 开始/停止持续盘点 */
+    private void toggleInventory() {
+        if (locating) { Toast.makeText(this, "定位进行中，请先停止定位", Toast.LENGTH_SHORT).show(); return; }
+        if (!inventorying) {
+            if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+            invStats.clear();
+            invRows.clear();
+            invEpcs.clear();
+            sdk.setInventoryMode(1);          // 多标签盘点模式
+            inventorying = true;
+            sdk.startInventory(new RfidSdk.InventoryCallback() {
+                @Override public void onTag(TagInfo t) {
+                    if (!inventorying || t.epc == null || t.epc.isEmpty()) return;
+                    int[] s = invStats.computeIfAbsent(t.epc, k -> new int[]{0, -120});
+                    s[0]++;
+                    int r = Math.round(parseRssi(t.rssi));
+                    if (r > s[1]) s[1] = r;
+                    queueInventoryRefresh();
+                }
+                @Override public void onEnd() { }
+            });
+            showInventoryDialog();
+        } else {
+            stopInventoryInternal();
+        }
+    }
+
+    private void stopInventoryInternal() {
+        inventorying = false;
+        sdk.stopInventory();
+        sdk.setInventoryMode(0);
+        refreshInventoryViews();
+    }
+
+    private void queueInventoryRefresh() {
+        if (!invRefreshQueued) {
+            invRefreshQueued = true;
+            uiHandler.postDelayed(invRefreshTask, 400);
+        }
+    }
+
+    /** 盘点结果弹窗：实时列表 + 停止盘点 + 保存CSV；点击条目进入定位 */
+    private void showInventoryDialog() {
+        android.widget.ListView lv = new android.widget.ListView(this);
+        invAdapter = new android.widget.ArrayAdapter<>(this, android.R.layout.simple_list_item_1, invRows);
+        lv.setAdapter(invAdapter);
+        lv.setOnItemClickListener((p, v, pos, id) -> {
+            String epc = invEpcs.get(pos);
+            if (inventorying) stopInventoryInternal();
+            if (invDialog != null) invDialog.dismiss();
+            locateTag(epc);
+        });
+
+        TextView tip = new TextView(this);
+        tip.setText("点击任意标签 → 雷达定位；同一 EPC 多次上报自动合并计数");
+        tip.setTextSize(12);
+        int pad = (int) (12 * getResources().getDisplayMetrics().density);
+        tip.setPadding(pad, pad, pad, 4);
+
+        android.widget.LinearLayout box = new android.widget.LinearLayout(this);
+        box.setOrientation(android.widget.LinearLayout.VERTICAL);
+        box.addView(tip);
+        box.addView(lv);
+        Button btnSave = new Button(this);
+        btnSave.setText("保存盘点CSV");
+        btnSave.setOnClickListener(v -> saveInventoryCsv());
+        box.addView(btnSave);
+
+        android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
+                .setTitle("盘点中：0 张标签")
+                .setView(box)
+                .setNegativeButton("关闭", null)
+                .create();
+        invDialog = d;
+        d.setOnDismissListener(di -> { if (inventorying) stopInventoryInternal(); });
+        d.show();
+        // 覆盖按钮行为：不自动关窗
+        d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setVisibility(View.GONE);
+        d.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).setVisibility(View.GONE);
+    }
+
+    /** 重建盘点列表并刷新弹窗（节流后由 uiHandler 调用） */
+    private void refreshInventoryViews() {
+        invRows.clear();
+        invEpcs.clear();
+        invStats.entrySet().stream()
+                .sorted((a, b) -> b.getValue()[0] - a.getValue()[0])
+                .forEach(e -> {
+                    boolean registered = false;
+                    for (WriteResult w : ledger) {
+                        if (e.getKey().equals(w.assetNo)) { registered = true; break; }
+                    }
+                    invEpcs.add(e.getKey());
+                    invRows.add(e.getKey()
+                            + "  次数:" + e.getValue()[0]
+                            + "  RSSI:" + (e.getValue()[1] <= -120 ? "--" : String.valueOf(e.getValue()[1]))
+                            + (registered ? "  [已登记]" : "  [未登记]"));
+                });
+        if (invDialog != null && invDialog.isShowing()) {
+            invDialog.setTitle((inventorying ? "盘点中：" : "盘点结束：")
+                    + invStats.size() + " 张标签");
+            invAdapter.notifyDataSetChanged();
+        }
+    }
+
+    /** 保存盘点结果 CSV（Excel 可直接打开，带 BOM 防中文乱码） */
+    private void saveInventoryCsv() {
+        if (invStats.isEmpty()) { Toast.makeText(this, "暂无盘点数据", Toast.LENGTH_SHORT).show(); return; }
+        try {
+            java.io.File dir = getExternalFilesDir(null);
+            if (dir == null) dir = getFilesDir();
+            java.io.File f = new java.io.File(dir, "inventory-"
+                    + new SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA).format(new Date()) + ".csv");
+            StringBuilder sb = new StringBuilder("\uFEFFepc,count,rssi_dbm,registered\r\n");
+            for (int i = 0; i < invEpcs.size(); i++) {
+                int[] s = invStats.get(invEpcs.get(i));
+                boolean registered = false;
+                for (WriteResult w : ledger) {
+                    if (invEpcs.get(i).equals(w.assetNo)) { registered = true; break; }
+                }
+                sb.append(invEpcs.get(i)).append(',').append(s[0]).append(',')
+                  .append(s[1] <= -120 ? "" : String.valueOf(s[1])).append(',')
+                  .append(registered ? "1" : "0").append("\r\n");
+            }
+            java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
+            fos.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+            fos.close();
+            Toast.makeText(this, "盘点结果已保存:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "保存失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
+    /** 标签定位：雷达图 + 信号值(0-254) + LED 提示，循环短盘点读取目标 RSSI */
+    private void locateTag(String epc) {
+        if (locating) { Toast.makeText(this, "已在定位中", Toast.LENGTH_SHORT).show(); return; }
+        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+        if (inventorying) stopInventoryInternal();
+
+        locating = true;
+        sdk.setInventoryMode(0);
+        sdk.setPower(parseInt(etPower, 30)); // 定位用高功率，读得远
+
+        float density = getResources().getDisplayMetrics().density;
+        android.widget.LinearLayout root = new android.widget.LinearLayout(this);
+        root.setOrientation(android.widget.LinearLayout.VERTICAL);
+        int pad = (int) (16 * density);
+        root.setPadding(pad, pad, pad, 0);
+
+        TextView tvInfo = new TextView(this);
+        tvInfo.setText("EPC: " + epc);
+        tvInfo.setTextSize(14);
+
+        TextView tvRssi = new TextView(this);
+        tvRssi.setText("信号值：--");
+        tvRssi.setTextSize(14);
+
+        RadarView radar = new RadarView(this);
+        radar.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, Math.round(300 * density)));
+
+        android.widget.CheckBox chkLed = new android.widget.CheckBox(this);
+        chkLed.setText("LED 闪烁提示（真机定位时标签灯闪）");
+        chkLed.setOnCheckedChangeListener((b, on) -> sdk.setLedBlink(on));
+
+        Button btnStop = new Button(this);
+        btnStop.setText("停止定位");
+        btnStop.setOnClickListener(v -> { locating = false; btnStop.setEnabled(false); btnStop.setText("已停止"); });
+
+        root.addView(tvInfo);
+        root.addView(tvRssi);
+        root.addView(radar);
+        root.addView(chkLed);
+        root.addView(btnStop);
+
+        android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
+                .setTitle("标签定位")
+                .setView(root)
+                .setNegativeButton("关闭", null)
+                .create();
+        d.setOnDismissListener(di -> {
+            locating = false;
+            sdk.setLedBlink(false);
+            sdk.stopInventory();
+            sdk.setInventoryMode(0);
+        });
+        d.show();
+
+        new Thread(() -> {
+            while (locating) {
+                final float[] best = {-120f};
+                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+                sdk.startInventory(new RfidSdk.InventoryCallback() {
+                    @Override public void onTag(TagInfo t) {
+                        if (epc.equals(t.epc)) {
+                            float r = parseRssi(t.rssi);
+                            if (r > best[0]) best[0] = r;
+                        }
+                    }
+                    @Override public void onEnd() { latch.countDown(); }
+                });
+                try { latch.await(400, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                sdk.stopInventory();
+                final float rssi = best[0];
+                runOnUiThread(() -> {
+                    if (!locating) return;
+                    radar.setRssiDbm(rssi);
+                    if (rssi <= -120) {
+                        tvRssi.setText("信号值：未捕捉到目标标签（请移动设备靠近）");
+                    } else {
+                        int sig = Math.max(0, Math.min(254, Math.round((rssi + 90f) * 254f / 60f)));
+                        tvRssi.setText("信号值：" + sig + " / 254（" + Math.round(rssi) + " dBm）"
+                                + (sig >= 220 ? "  → 就在附近！" : ""));
+                    }
+                });
+                try { Thread.sleep(80); } catch (InterruptedException e) { break; }
+            }
+        }).start();
+    }
+
+    private static float parseRssi(String s) {
+        try { return Float.parseFloat(s); } catch (Exception e) { return -120f; }
     }
 
     // ----------------- 单个新增（名称必填，编码自动生成） -----------------

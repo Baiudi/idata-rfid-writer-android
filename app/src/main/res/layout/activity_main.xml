@@ -229,6 +229,26 @@
             android:text="开始批量写标" />
     </LinearLayout>
 
+    <!-- 盘点与标签定位 -->
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="horizontal"
+        android:layout_marginTop="8dp">
+        <Button
+            android:id="@+id/btnInventory"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="开始盘点" />
+        <Button
+            android:id="@+id/btnLocate"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="1"
+            android:text="定位标签" />
+    </LinearLayout>
+
     <!-- 进度与状态 -->
     <TextView
         android:id="@+id/tvStatus"

@@ -5,6 +5,8 @@ import android.os.Looper;
 
 import com.example.rfidwriter.util.FormatUtil;
 
+import java.util.ArrayList;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -39,6 +41,11 @@ public class SimulatedRfidAdapter implements RfidSdk {
     private final AtomicReference<String> mLastWriteVal = new AtomicReference<>("");
 
     private volatile boolean mInventorying = false;
+    private volatile int mInvMode = 0;          // 0=单标签模式（写标用） 1=多标签盘点池
+    private RfidSdk.InventoryCallback mInvCb;   // 当前盘点回调（流式上报直到 stop）
+    private final List<String> mPoolEpcs = new ArrayList<>();   // 盘点池：虚拟标签群
+    private final List<String> mPoolTids = new ArrayList<>();
+    private final float[] mLastRssi = {-45f};   // 定位演示：RSSI 随机游走
 
     private static String randHex(int nibbles) {
         StringBuilder sb = new StringBuilder();
@@ -63,38 +70,72 @@ public class SimulatedRfidAdapter implements RfidSdk {
     public void setPower(int dbm) { /* 模拟：忽略 */ }
 
     @Override
-    public void setInventoryMode(int mode) { /* 模拟：忽略 */ }
+    public void setInventoryMode(int mode) { mInvMode = mode; }
+
+    /** 流式盘点：每 ~250ms 上报一批标签，直到 stopInventory */
+    private final Runnable mStreamTask = new Runnable() {
+        @Override public void run() {
+            if (!mInventorying || mInvCb == null) return;
+            if (mInvMode == 0) {
+                // 单标签模式：同一条虚拟标签反复上报（保证「检测唯一标签」与定位流程成立）
+                mLastRssi[0] = walk(mLastRssi[0]);
+                TagInfo t = new TagInfo();
+                t.epc = mEpc.get();
+                t.tid = mTid.get();
+                t.rssi = String.valueOf(Math.round(mLastRssi[0]));
+                mInvCb.onTag(t);
+            } else {
+                // 多标签盘点池：随机上报 1~2 张
+                int n = 1 + new Random().nextInt(2);
+                for (int i = 0; i < n && !mPoolEpcs.isEmpty(); i++) {
+                    int idx = new Random().nextInt(mPoolEpcs.size());
+                    TagInfo t = new TagInfo();
+                    t.epc = mPoolEpcs.get(idx);
+                    t.tid = mPoolTids.get(idx);
+                    t.rssi = String.valueOf(-35 - new Random().nextInt(36)); // -35..-70
+                    mInvCb.onTag(t);
+                }
+            }
+            mMain.postDelayed(this, 250);
+        }
+    };
+
+    private static float walk(float last) {
+        float next = last + (new Random().nextInt(17) - 8f); // ±8 dBm 随机游走
+        return Math.max(-70f, Math.min(-30f, next));
+    }
 
     @Override
     public void startInventory(InventoryCallback cb) {
         if (!mConnected.get() || cb == null) return;
         mInventorying = true;
+        mInvCb = cb;
         // 每次盘点生成一张全新的虚拟标签（模拟“把一张空白标签靠近天线”）
         mEpc.set(randHex(8));
         mTid.set(randHex(12));
+        mLastRssi[0] = -45f;
 
-        final String epc = mEpc.get();
-        final String tid = mTid.get();
-
-        mMain.postDelayed(() -> {
-            if (!mInventorying) return;
-            TagInfo t = new TagInfo();
-            t.epc = epc;
-            t.tid = tid;
-            t.rssi = "-45";
-            cb.onTag(t);
-        }, 300);
-
-        mMain.postDelayed(() -> {
-            if (!mInventorying) return;
-            mInventorying = false;
-            cb.onEnd();
-        }, 600);
+        if (mInvMode == 1 && mPoolEpcs.isEmpty()) {
+            // 懒初始化 8 张池内虚拟标签（模拟货架上的一批标签）
+            for (int i = 0; i < 8; i++) {
+                mPoolEpcs.add(randHex(8));
+                mPoolTids.add(randHex(12));
+            }
+        }
+        mMain.post(mStreamTask);
+        // 单标签模式：600ms 后补发 onEnd（写标检测不用等满检测窗口，流仍继续直到 stop）
+        if (mInvMode == 0) {
+            mMain.postDelayed(() -> { if (mInventorying && cb != null) cb.onEnd(); }, 600);
+        }
     }
 
     @Override
     public void stopInventory() {
         mInventorying = false;
+        mMain.removeCallbacks(mStreamTask);
+        final RfidSdk.InventoryCallback cb = mInvCb;
+        mInvCb = null;
+        if (cb != null) mMain.post(cb::onEnd);
     }
 
     @Override
