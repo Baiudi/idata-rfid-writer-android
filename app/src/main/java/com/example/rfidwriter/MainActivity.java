@@ -88,6 +88,7 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     protected void onCreate(Bundle b) {
+        installCrashHandler();   // 必须在最前：捕获后续任何启动期崩溃并落盘
         super.onCreate(b);
         setContentView(R.layout.activity_main);
         db = new ResultDbHelper(this);
@@ -160,6 +161,72 @@ public class MainActivity extends AppCompatActivity {
         ledger.addAll(db.getAll());
         adapter.notifyDataSetChanged();
         refreshProgress();
+
+        // 若上次崩溃已记录，弹窗展示堆栈（截图发我即可定位）
+        maybeShowLastCrash();
+    }
+
+    // ----------------- 崩溃自诊断（远程排查用） -----------------
+
+    /** 安装全局未捕获异常处理器：崩溃时把堆栈写入文件，下次启动弹窗展示 */
+    private void installCrashHandler() {
+        final Thread.UncaughtExceptionHandler def = Thread.getDefaultUncaughtExceptionHandler();
+        Thread.setDefaultUncaughtExceptionHandler((t, e) -> {
+            try {
+                String ts = new SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA).format(new Date());
+                java.io.File dir = new java.io.File(getExternalFilesDir(null), "crash");
+                dir.mkdirs();
+                java.io.File f = new java.io.File(dir, "crash-" + ts + ".txt");
+                try (java.io.FileWriter w = new java.io.FileWriter(f)) {
+                    w.write("Time: " + ts + "\n");
+                    w.write("Thread: " + t.getName() + "\n");
+                    e.printStackTrace(w);
+                }
+                android.content.SharedPreferences sp = getSharedPreferences("crash", MODE_PRIVATE);
+                sp.edit().putString("last_crash", f.getAbsolutePath()).apply();
+            } catch (Throwable ignore) { }
+            if (def != null) def.uncaughtException(t, e);
+        });
+    }
+
+    /** 若上次崩溃已记录，弹窗展示堆栈，方便截图反馈；展示后清除记录 */
+    private void maybeShowLastCrash() {
+        try {
+            android.content.SharedPreferences sp = getSharedPreferences("crash", MODE_PRIVATE);
+            String path = sp.getString("last_crash", null);
+            if (path == null) return;
+            sp.edit().remove("last_crash").apply();
+            java.io.File f = new java.io.File(path);
+            if (!f.exists()) return;
+            StringBuilder sb = new StringBuilder();
+            try (java.io.BufferedReader r = new java.io.BufferedReader(new java.io.FileReader(f))) {
+                String line;
+                int lines = 0;
+                while ((line = r.readLine()) != null && lines < 200) {
+                    sb.append(line).append("\n");
+                    lines++;
+                }
+            }
+            String text = sb.toString();
+            android.widget.ScrollView sv = new android.widget.ScrollView(this);
+            android.widget.TextView tv = new android.widget.TextView(this);
+            tv.setText(text);
+            tv.setTextSize(11);
+            int p = (int) (8 * getResources().getDisplayMetrics().density);
+            tv.setPadding(p, p, p, p);
+            sv.addView(tv);
+            new android.app.AlertDialog.Builder(this)
+                    .setTitle("上次启动崩溃报告（截图发我即可定位）")
+                    .setView(sv)
+                    .setPositiveButton("复制", (d, w) -> {
+                        android.content.ClipboardManager cm =
+                                (android.content.ClipboardManager) getSystemService(CLIPBOARD_SERVICE);
+                        if (cm != null) cm.setPrimaryClip(android.content.ClipData.newPlainText("crash", text));
+                        Toast.makeText(this, "已复制到剪贴板", Toast.LENGTH_SHORT).show();
+                    })
+                    .setNegativeButton("关闭", null)
+                    .show();
+        } catch (Throwable ignore) { }
     }
 
     // ----------------- 连接 / 参数 -----------------
