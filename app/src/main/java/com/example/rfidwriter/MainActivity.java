@@ -64,11 +64,12 @@ public class MainActivity extends AppCompatActivity {
 
     private EditText etPower, etModule, etBank, etStartWord, etSingleAsset, etLocation, etDept, etOwner;
     private TextView tvStatus, tvProgress, tvDetected, tvSingleResult;
-    private Button btnStartWrite, btnSync, btnWriteSingle;
+    private Button btnStartWrite, btnSync, btnWriteSingle, btnInventory;
     private TagInfo lastDetectedTag;
 
     private volatile boolean writing = false;
     private volatile boolean inventorying = false;
+    private volatile boolean invPaused = false;
     private volatile boolean locating = false;
 
     // 盘点统计：epc -> [次数, 最大RSSI(dBm)]
@@ -77,6 +78,7 @@ public class MainActivity extends AppCompatActivity {
     private final List<String> invEpcs = new ArrayList<>();   // 与 invRows 对应的 EPC
     private android.app.AlertDialog invDialog;
     private android.widget.ArrayAdapter<String> invAdapter;
+    private Button dlgBtnPause;
     private final Handler uiHandler = new Handler(Looper.getMainLooper());
     private boolean invRefreshQueued;
     private final Runnable invRefreshTask = () -> { invRefreshQueued = false; refreshInventoryViews(); };
@@ -135,7 +137,8 @@ public class MainActivity extends AppCompatActivity {
         btnSync.setOnClickListener(v -> syncToDws());
         findViewById(R.id.btnDetectSingle).setOnClickListener(v -> detectSingle());
         btnWriteSingle.setOnClickListener(v -> writeSingle());
-        findViewById(R.id.btnInventory).setOnClickListener(v -> toggleInventory());
+        btnInventory = findViewById(R.id.btnInventory);
+        btnInventory.setOnClickListener(v -> toggleInventory());
         findViewById(R.id.btnLocate).setOnClickListener(v -> {
             if (lastDetectedTag != null && !nz(lastDetectedTag.epc).isEmpty()) {
                 locateTag(lastDetectedTag.epc);
@@ -491,38 +494,74 @@ public class MainActivity extends AppCompatActivity {
 
     // ----------------- 盘点（持续群读）与标签定位 -----------------
 
-    /** 开始/停止持续盘点 */
+    /** 开始/停止持续盘点（主界面按钮：开始会话 <-> 结束会话） */
     private void toggleInventory() {
         if (locating) { Toast.makeText(this, "定位进行中，请先停止定位", Toast.LENGTH_SHORT).show(); return; }
         if (!inventorying) {
-            if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
-            invStats.clear();
-            invRows.clear();
-            invEpcs.clear();
-            sdk.setInventoryMode(1);          // 多标签盘点模式
-            inventorying = true;
-            sdk.startInventory(new RfidSdk.InventoryCallback() {
-                @Override public void onTag(TagInfo t) {
-                    if (!inventorying || t.epc == null || t.epc.isEmpty()) return;
-                    int[] s = invStats.computeIfAbsent(t.epc, k -> new int[]{0, -120});
-                    s[0]++;
-                    int r = Math.round(parseRssi(t.rssi));
-                    if (r > s[1]) s[1] = r;
-                    queueInventoryRefresh();
-                }
-                @Override public void onEnd() { }
-            });
-            showInventoryDialog();
+            startInventorySession();
         } else {
-            stopInventoryInternal();
+            endInventory();
         }
     }
 
-    private void stopInventoryInternal() {
+    /** 开始一次盘点会话：清空旧统计并启动群读 */
+    private void startInventorySession() {
+        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+        invStats.clear();
+        invRows.clear();
+        invEpcs.clear();
+        invPaused = false;
+        inventorying = true;
+        sdk.setInventoryMode(1);          // 多标签盘点模式
+        sdk.startInventory(makeInventoryCallback());
+        showInventoryDialog();
+        updateInventoryButton();
+    }
+
+    /** 结束盘点会话：停止群读，统计结果保留在弹窗内（可保存/导出） */
+    private void endInventory() {
         inventorying = false;
+        invPaused = false;
         sdk.stopInventory();
         sdk.setInventoryMode(0);
+        updateInventoryButton();
         refreshInventoryViews();
+    }
+
+    /** 暂停盘点：停止群读，但保留已统计结果，稍后可继续盘点 */
+    private void pauseInventory() {
+        if (!inventorying || invPaused) return;
+        invPaused = true;
+        sdk.stopInventory();
+        refreshInventoryViews();          // 标题刷新为「已暂停」
+    }
+
+    /** 继续盘点：在暂停基础上恢复群读，统计结果累加而非清零 */
+    private void resumeInventory() {
+        if (!inventorying || !invPaused) return;
+        invPaused = false;
+        sdk.setInventoryMode(1);
+        sdk.startInventory(makeInventoryCallback());
+        refreshInventoryViews();          // 标题刷新为「盘点中」
+    }
+
+    /** 统一创建盘点群读回调（开始与继续复用同一份） */
+    private RfidSdk.InventoryCallback makeInventoryCallback() {
+        return new RfidSdk.InventoryCallback() {
+            @Override public void onTag(TagInfo t) {
+                if (!inventorying || invPaused || t.epc == null || t.epc.isEmpty()) return;
+                int[] s = invStats.computeIfAbsent(t.epc, k -> new int[]{0, -120});
+                s[0]++;
+                int r = Math.round(parseRssi(t.rssi));
+                if (r > s[1]) s[1] = r;
+                queueInventoryRefresh();
+            }
+            @Override public void onEnd() { }
+        };
+    }
+
+    private void updateInventoryButton() {
+        if (btnInventory != null) btnInventory.setText(inventorying ? "停止盘点" : "开始盘点");
     }
 
     private void queueInventoryRefresh() {
@@ -532,20 +571,20 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** 盘点结果弹窗：实时列表 + 停止盘点 + 保存CSV；点击条目进入定位 */
+    /** 盘点结果弹窗：实时列表 + 暂停/继续盘点 + 保存Excel + 结束；点击条目进入定位 */
     private void showInventoryDialog() {
         android.widget.ListView lv = new android.widget.ListView(this);
         invAdapter = new android.widget.ArrayAdapter<>(this, android.R.layout.simple_list_item_1, invRows);
         lv.setAdapter(invAdapter);
         lv.setOnItemClickListener((p, v, pos, id) -> {
             String epc = invEpcs.get(pos);
-            if (inventorying) stopInventoryInternal();
+            endInventory();
             if (invDialog != null) invDialog.dismiss();
             locateTag(epc);
         });
 
         TextView tip = new TextView(this);
-        tip.setText("点击任意标签 → 雷达定位；同一 EPC 多次上报自动合并计数");
+        tip.setText("点击任意标签 → 雷达定位；同一 EPC 多次上报自动合并计数；可暂停盘点后再继续");
         tip.setTextSize(12);
         int pad = (int) (12 * getResources().getDisplayMetrics().density);
         tip.setPadding(pad, pad, pad, 4);
@@ -554,6 +593,15 @@ public class MainActivity extends AppCompatActivity {
         box.setOrientation(android.widget.LinearLayout.VERTICAL);
         box.addView(tip);
         box.addView(lv);
+
+        dlgBtnPause = new Button(this);
+        dlgBtnPause.setText(invPaused ? "继续盘点" : "暂停盘点");
+        dlgBtnPause.setOnClickListener(v -> {
+            if (invPaused) resumeInventory();
+            else pauseInventory();
+        });
+        box.addView(dlgBtnPause);
+
         Button btnSave = new Button(this);
         btnSave.setText("保存盘点Excel");
         btnSave.setOnClickListener(v -> saveInventoryExcel());
@@ -562,10 +610,10 @@ public class MainActivity extends AppCompatActivity {
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
                 .setTitle("盘点中：0 张标签")
                 .setView(box)
-                .setNegativeButton("关闭", null)
+                .setNegativeButton("结束盘点", null)
                 .create();
         invDialog = d;
-        d.setOnDismissListener(di -> { if (inventorying) stopInventoryInternal(); });
+        d.setOnDismissListener(di -> { endInventory(); dlgBtnPause = null; });
         d.show();
         // 覆盖按钮行为：不自动关窗
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setVisibility(View.GONE);
@@ -590,8 +638,11 @@ public class MainActivity extends AppCompatActivity {
                             + (registered ? "  [已登记]" : "  [未登记]"));
                 });
         if (invDialog != null && invDialog.isShowing()) {
-            invDialog.setTitle((inventorying ? "盘点中：" : "盘点结束：")
+            invDialog.setTitle((invPaused ? "已暂停：" : (inventorying ? "盘点中：" : "盘点结束："))
                     + invStats.size() + " 张标签");
+            if (dlgBtnPause != null) {
+                dlgBtnPause.setText(invPaused ? "继续盘点" : "暂停盘点");
+            }
             invAdapter.notifyDataSetChanged();
         }
     }
@@ -635,7 +686,7 @@ public class MainActivity extends AppCompatActivity {
     private void locateTag(String epc) {
         if (locating) { Toast.makeText(this, "已在定位中", Toast.LENGTH_SHORT).show(); return; }
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
-        if (inventorying) stopInventoryInternal();
+        if (inventorying) endInventory();
 
         locating = true;
         sdk.setInventoryMode(0);
