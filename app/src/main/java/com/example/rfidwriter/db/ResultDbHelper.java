@@ -71,25 +71,33 @@ public class ResultDbHelper extends SQLiteOpenHelper {
         Cursor c = db.query(TABLE, null, null, null, null, null, "asset_no ASC");
         while (c.moveToNext()) {
             WriteResult r = new WriteResult();
-            r.assetNo = c.getString(c.getColumnIndexOrThrow("asset_no"));
-            r.assetName = c.getString(c.getColumnIndexOrThrow("asset_name"));
-            r.dept = c.getString(c.getColumnIndexOrThrow("dept"));
-            r.model = c.getString(c.getColumnIndexOrThrow("model"));
-            r.remark = c.getString(c.getColumnIndexOrThrow("remark"));
-            r.category = c.getString(c.getColumnIndexOrThrow("category"));
-            r.purchaseDate = c.getString(c.getColumnIndexOrThrow("purchase_date"));
-            r.purchasePrice = c.getString(c.getColumnIndexOrThrow("purchase_price"));
-            r.tid = c.getString(c.getColumnIndexOrThrow("tid"));
-            r.epc = c.getString(c.getColumnIndexOrThrow("epc"));
-            r.writtenData = c.getString(c.getColumnIndexOrThrow("written_data"));
-            r.status = c.getString(c.getColumnIndexOrThrow("status"));
-            r.error = c.getString(c.getColumnIndexOrThrow("error"));
-            r.writtenAt = c.getString(c.getColumnIndexOrThrow("written_at"));
+            r.assetNo = str(c, "asset_no");
+            r.assetName = str(c, "asset_name");
+            r.dept = str(c, "dept");
+            r.model = str(c, "model");
+            r.remark = str(c, "remark");
+            r.category = str(c, "category");
+            r.purchaseDate = str(c, "purchase_date");
+            r.purchasePrice = str(c, "purchase_price");
+            r.tid = str(c, "tid");
+            r.epc = str(c, "epc");
+            r.writtenData = str(c, "written_data");
+            r.status = str(c, "status");
+            r.error = str(c, "error");
+            r.writtenAt = str(c, "written_at");
             list.add(r);
         }
         c.close();
         db.close();
         return list;
+    }
+
+    /** 容错读取：列不存在或值为 null 时返回空串，避免旧版本数据库残留导致启动崩溃 */
+    private static String str(Cursor c, String col) {
+        int i = c.getColumnIndex(col);
+        if (i < 0) return "";
+        String v = c.getString(i);
+        return v == null ? "" : v;
     }
 
     /** 编码是否已存在（用于自动生成时查重） */
