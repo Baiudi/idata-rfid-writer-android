@@ -177,7 +177,7 @@ public class MainActivity extends AppCompatActivity {
                 java.io.File dir = new java.io.File(getExternalFilesDir(null), "crash");
                 dir.mkdirs();
                 java.io.File f = new java.io.File(dir, "crash-" + ts + ".txt");
-                try (java.io.FileWriter w = new java.io.FileWriter(f)) {
+                try (java.io.PrintWriter w = new java.io.PrintWriter(f)) {
                     w.write("Time: " + ts + "\n");
                     w.write("Thread: " + t.getName() + "\n");
                     e.printStackTrace(w);
