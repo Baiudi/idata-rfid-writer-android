@@ -73,6 +73,7 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean inventorying = false;
     private volatile boolean invPaused = false;
     private volatile boolean locating = false;
+    private boolean locateFromInventory = false;   // 本次定位是否由盘点弹窗发起（关闭后自动回盘点）
 
     // 盘点统计：epc -> [次数, 最大RSSI(dBm)]
     private final Map<String, int[]> invStats = new ConcurrentHashMap<>();
@@ -593,13 +594,18 @@ public class MainActivity extends AppCompatActivity {
                 ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         lv.setOnItemClickListener((p, v, pos, id) -> {
             String epc = invEpcs.get(pos);
-            endInventory();
-            if (invDialog != null) invDialog.dismiss();
+            // 暂停盘点读取（保留会话与统计），打开定位；定位关闭后会自动继续盘点
+            if (inventorying && !invPaused) {
+                invPaused = true;
+                sdk.stopInventory();
+                refreshInventoryViews();
+            }
+            locateFromInventory = true;
             locateTag(epc);
         });
 
         TextView tip = new TextView(this);
-        tip.setText("点击任意标签 → 雷达定位；同一 EPC 多次上报自动合并计数；可暂停盘点后再继续");
+        tip.setText("点击任意标签 → 雷达定位（定位关闭后自动回到本盘点继续累加）；同一 EPC 自动合并计数；也可先暂停盘点再去别处");
         tip.setTextSize(12);
         int pad = (int) (12 * getResources().getDisplayMetrics().density);
         tip.setPadding(pad, pad, pad, 4);
@@ -706,9 +712,10 @@ public class MainActivity extends AppCompatActivity {
 
     /** 标签定位：雷达图 + 信号值(0-254) + LED 提示，循环短盘点读取目标 RSSI */
     private void locateTag(String epc) {
-        if (locating) { Toast.makeText(this, "已在定位中", Toast.LENGTH_SHORT).show(); return; }
-        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
-        if (inventorying) endInventory();
+        if (locating) { Toast.makeText(this, "已在定位中", Toast.LENGTH_SHORT).show(); locateFromInventory = false; return; }
+        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); locateFromInventory = false; return; }
+        // 若本次定位由盘点发起：仅暂停盘点读取（不结束会话），定位关闭后自动回盘点继续
+        if (inventorying && !locateFromInventory) endInventory();
 
         locating = true;
         sdk.setInventoryMode(0);
@@ -762,6 +769,16 @@ public class MainActivity extends AppCompatActivity {
             sdk.setLedBlink(false);
             sdk.stopInventory();
             sdk.setInventoryMode(0);
+            // 定位是由盘点发起的：关闭后自动回到盘点会话继续（保留统计、累加读取）
+            if (locateFromInventory) {
+                locateFromInventory = false;
+                if (inventorying && invPaused) {
+                    invPaused = false;
+                    sdk.setInventoryMode(1);
+                    sdk.startInventory(makeInventoryCallback());
+                    refreshInventoryViews();
+                }
+            }
         });
         d.show();
 
