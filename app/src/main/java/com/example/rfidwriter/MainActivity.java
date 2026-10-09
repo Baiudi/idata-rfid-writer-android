@@ -192,6 +192,7 @@ public class MainActivity extends AppCompatActivity {
             fos.close();
             Toast.makeText(this, "模板已导出:\n" + f.getAbsolutePath()
                     + "\n用电脑 Excel 填写后点「导入Excel/CSV」导入", Toast.LENGTH_LONG).show();
+            shareFile(f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         } catch (Exception e) {
             Toast.makeText(this, "导出模板失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -680,6 +681,7 @@ public class MainActivity extends AppCompatActivity {
             fos.write(FormatUtil.buildTableXlsx("盘点结果", headers, rows));
             fos.close();
             Toast.makeText(this, "盘点结果已保存:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            shareFile(f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
         } catch (Exception e) {
             Toast.makeText(this, "保存失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -868,6 +870,7 @@ public class MainActivity extends AppCompatActivity {
             List<WriteResult> all = db.getAll();
             java.io.File f = SyncManager.exportResultsJson(this, all);
             Toast.makeText(this, "已导出:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            shareFile(f, "application/json");
         } catch (Exception e) {
             Toast.makeText(this, "导出失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -908,6 +911,21 @@ public class MainActivity extends AppCompatActivity {
         int succ = db.countByStatus("success");
         int fail = db.countByStatus("failed");
         tvProgress.setText("进度：成功 " + succ + " / 失败 " + fail + " / 共 " + ledger.size());
+    }
+
+    /** 弹出系统分享菜单，可直接发微信/QQ/邮件（无需到文件管理里找 Android/data 目录） */
+    private void shareFile(java.io.File f, String mime) {
+        try {
+            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
+                    this, getPackageName() + ".fileprovider", f);
+            Intent it = new Intent(Intent.ACTION_SEND);
+            it.setType(mime);
+            it.putExtra(Intent.EXTRA_STREAM, uri);
+            it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
+            startActivity(Intent.createChooser(it, "分享：" + f.getName()));
+        } catch (Exception e) {
+            Toast.makeText(this, "分享失败:" + e.getMessage(), Toast.LENGTH_SHORT).show();
+        }
     }
 
     private void setStatus(String s) { tvStatus.setText("状态：" + s); }

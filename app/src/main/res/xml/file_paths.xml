@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<paths>
+    <!-- 应用外部专属目录：getExternalFilesDir(null) -->
+    <external-files-path name="external_files" path="." />
+    <!-- 应用内部目录：getFilesDir() -->
+    <files-path name="internal_files" path="." />
+</paths>
