@@ -576,6 +576,9 @@ public class MainActivity extends AppCompatActivity {
         android.widget.ListView lv = new android.widget.ListView(this);
         invAdapter = new android.widget.ArrayAdapter<>(this, android.R.layout.simple_list_item_1, invRows);
         lv.setAdapter(invAdapter);
+        // 占据弹窗内剩余高度，保证列表可滚动且下方按钮始终可见
+        lv.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
         lv.setOnItemClickListener((p, v, pos, id) -> {
             String epc = invEpcs.get(pos);
             endInventory();
