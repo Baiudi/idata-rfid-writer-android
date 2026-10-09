@@ -68,6 +68,18 @@ public class MainActivity extends AppCompatActivity {
     private TagInfo lastDetectedTag;
 
     private volatile boolean writing = false;
+    private volatile boolean inventorying = false;
+    private volatile boolean locating = false;
+
+    // 盘点统计：epc -> [次数, 最大RSSI(dBm)]
+    private final Map<String, int[]> invStats = new ConcurrentHashMap<>();
+    private final List<String> invRows = new ArrayList<>();   // 盘点对话框展示行
+    private final List<String> invEpcs = new ArrayList<>();   // 与 invRows 对应的 EPC
+    private android.app.AlertDialog invDialog;
+    private android.widget.ArrayAdapter<String> invAdapter;
+    private final Handler uiHandler = new Handler(Looper.getMainLooper());
+    private boolean invRefreshQueued;
+    private final Runnable invRefreshTask = () -> { invRefreshQueued = false; refreshInventoryViews(); };
 
     @Override
     protected void onCreate(Bundle b) {
