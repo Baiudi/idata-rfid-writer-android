@@ -3,7 +3,9 @@ package com.example.rfidwriter;
 import android.app.Activity;
 import android.content.Intent;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -88,6 +90,12 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(b);
         setContentView(R.layout.activity_main);
         db = new ResultDbHelper(this);
+
+        // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
+        if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
+                != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 2001);
+        }
 
         etPower = findViewById(R.id.etPower);
         etModule = findViewById(R.id.etModule);
@@ -181,18 +189,21 @@ public class MainActivity extends AppCompatActivity {
         startActivityForResult(i, REQ_PICK_LEDGER);
     }
 
-    /** 导出批量导入 Excel 模板（.xlsx）到应用外部文件目录 */
+    /** 导出批量导入 Excel 模板（.xlsx）到公共「下载/RFID盘点」文件夹 */
     private void exportTemplate() {
         try {
-            java.io.File dir = getExternalFilesDir(null);
-            if (dir == null) dir = getFilesDir();
-            java.io.File f = new java.io.File(dir, "asset-import-template.xlsx");
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
-            fos.write(FormatUtil.buildTemplateXlsx());
-            fos.close();
-            Toast.makeText(this, "模板已导出:\n" + f.getAbsolutePath()
-                    + "\n用电脑 Excel 填写后点「导入Excel/CSV」导入", Toast.LENGTH_LONG).show();
-            shareFile(f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            byte[] xlsx = FormatUtil.buildTemplateXlsx();
+            String where = saveToDownloads("asset-import-template.xlsx", xlsx);
+            if (where != null) {
+                Toast.makeText(this, "模板已保存到手机「下载/RFID盘点」文件夹：\nasset-import-template.xlsx"
+                        + "\n传到电脑 Excel 填写后，再点「导入Excel/CSV」选择导入", Toast.LENGTH_LONG).show();
+            } else {
+                java.io.File dir = getExternalFilesDir(null);
+                if (dir == null) dir = getFilesDir();
+                java.io.File f = new java.io.File(dir, "asset-import-template.xlsx");
+                try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f)) { fos.write(xlsx); }
+                Toast.makeText(this, "模板已导出:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            }
         } catch (Exception e) {
             Toast.makeText(this, "导出模板失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -651,14 +662,12 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** 保存盘点结果 Excel（.xlsx，已登记条目附带资产名称） */
+    /** 保存盘点结果 Excel（.xlsx，已登记条目附带资产名称）——直接存入公共「下载/RFID盘点」文件夹 */
     private void saveInventoryExcel() {
         if (invStats.isEmpty()) { Toast.makeText(this, "暂无盘点数据", Toast.LENGTH_SHORT).show(); return; }
         try {
-            java.io.File dir = getExternalFilesDir(null);
-            if (dir == null) dir = getFilesDir();
-            java.io.File f = new java.io.File(dir, "inventory-"
-                    + new SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA).format(new Date()) + ".xlsx");
+            String fileName = "inventory-"
+                    + new SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA).format(new Date()) + ".xlsx";
             String[] headers = {"EPC/资产编码", "资产名称", "盘点次数", "最大RSSI(dBm)", "登记状态"};
             List<String[]> rows = new ArrayList<>();
             for (int i = 0; i < invEpcs.size(); i++) {
@@ -677,11 +686,19 @@ public class MainActivity extends AppCompatActivity {
                         s[1] <= -120 ? "" : String.valueOf(s[1]),
                         registered ? "已登记" : "未登记"});
             }
-            java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
-            fos.write(FormatUtil.buildTableXlsx("盘点结果", headers, rows));
-            fos.close();
-            Toast.makeText(this, "盘点结果已保存:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
-            shareFile(f, "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet");
+            byte[] xlsx = FormatUtil.buildTableXlsx("盘点结果", headers, rows);
+            String where = saveToDownloads(fileName, xlsx);
+            if (where == null) {
+                // 公共目录不可写（老系统未授权等），退回应用目录并提示
+                java.io.File dir = getExternalFilesDir(null);
+                if (dir == null) dir = getFilesDir();
+                java.io.File f = new java.io.File(dir, fileName);
+                try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f)) { fos.write(xlsx); }
+                Toast.makeText(this, "已保存到应用目录:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(this, "已保存到手机「下载/RFID盘点」文件夹：\n" + fileName
+                        + "\n文件管理 或 微信聊天→文件 里都能直接找到发送", Toast.LENGTH_LONG).show();
+            }
         } catch (Exception e) {
             Toast.makeText(this, "保存失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -869,8 +886,13 @@ public class MainActivity extends AppCompatActivity {
         try {
             List<WriteResult> all = db.getAll();
             java.io.File f = SyncManager.exportResultsJson(this, all);
-            Toast.makeText(this, "已导出:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
-            shareFile(f, "application/json");
+            byte[] data = java.nio.file.Files.readAllBytes(f.toPath());
+            String where = saveToDownloads(f.getName(), data);
+            if (where != null) {
+                Toast.makeText(this, "已保存到手机「下载/RFID盘点」文件夹：\n" + f.getName(), Toast.LENGTH_LONG).show();
+            } else {
+                Toast.makeText(this, "已导出:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
+            }
         } catch (Exception e) {
             Toast.makeText(this, "导出失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
         }
@@ -913,19 +935,48 @@ public class MainActivity extends AppCompatActivity {
         tvProgress.setText("进度：成功 " + succ + " / 失败 " + fail + " / 共 " + ledger.size());
     }
 
-    /** 弹出系统分享菜单，可直接发微信/QQ/邮件（无需到文件管理里找 Android/data 目录） */
-    private void shareFile(java.io.File f, String mime) {
+    /**
+     * 把导出文件直接写入公共「下载/RFID盘点」文件夹（所有文件管理器/微信都能看到）。
+     * 成功返回给用户展示的路径；失败返回 null（调用方退回应用专属目录）。
+     */
+    private String saveToDownloads(String fileName, byte[] data) {
         try {
-            android.net.Uri uri = androidx.core.content.FileProvider.getUriForFile(
-                    this, getPackageName() + ".fileprovider", f);
-            Intent it = new Intent(Intent.ACTION_SEND);
-            it.setType(mime);
-            it.putExtra(Intent.EXTRA_STREAM, uri);
-            it.addFlags(Intent.FLAG_GRANT_READ_URI_PERMISSION);
-            startActivity(Intent.createChooser(it, "分享：" + f.getName()));
+            if (Build.VERSION.SDK_INT >= 29) {
+                android.content.ContentValues cv = new android.content.ContentValues();
+                cv.put(android.provider.MediaStore.Downloads.DISPLAY_NAME, fileName);
+                cv.put(android.provider.MediaStore.Downloads.MIME_TYPE, guessMime(fileName));
+                cv.put(android.provider.MediaStore.Downloads.RELATIVE_PATH, "Download/RFID盘点");
+                cv.put(android.provider.MediaStore.Downloads.IS_PENDING, 1);
+                Uri uri = getContentResolver().insert(
+                        android.provider.MediaStore.Downloads.EXTERNAL_CONTENT_URI, cv);
+                if (uri == null) return null;
+                try (java.io.OutputStream os = getContentResolver().openOutputStream(uri)) {
+                    os.write(data);
+                }
+                cv.clear();
+                cv.put(android.provider.MediaStore.Downloads.IS_PENDING, 0);
+                getContentResolver().update(uri, cv, null, null);
+                return "下载/RFID盘点/" + fileName;
+            } else {
+                java.io.File dir = new java.io.File(
+                        Environment.getExternalStoragePublicDirectory(Environment.DIRECTORY_DOWNLOADS),
+                        "RFID盘点");
+                if (!dir.exists() && !dir.mkdirs()) return null;
+                java.io.File f = new java.io.File(dir, fileName);
+                try (java.io.FileOutputStream fos = new java.io.FileOutputStream(f)) { fos.write(data); }
+                return f.getAbsolutePath();
+            }
         } catch (Exception e) {
-            Toast.makeText(this, "分享失败:" + e.getMessage(), Toast.LENGTH_SHORT).show();
+            Log.w(TAG, "saveToDownloads failed: " + e);
+            return null;
         }
+    }
+
+    private static String guessMime(String name) {
+        if (name.endsWith(".xlsx")) return "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet";
+        if (name.endsWith(".json")) return "application/json";
+        if (name.endsWith(".csv")) return "text/csv";
+        return "application/octet-stream";
     }
 
     private void setStatus(String s) { tvStatus.setText("状态：" + s); }
