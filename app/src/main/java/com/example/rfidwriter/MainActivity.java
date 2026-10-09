@@ -632,7 +632,8 @@ public class MainActivity extends AppCompatActivity {
 
         locating = true;
         sdk.setInventoryMode(0);
-        sdk.setPower(parseInt(etPower, 30)); // 定位用高功率，读得远
+        final float txPower = parseInt(etPower, 30); // 定位用高功率，读得远
+        sdk.setPower((int) txPower);
 
         float density = getResources().getDisplayMetrics().density;
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
@@ -648,6 +649,10 @@ public class MainActivity extends AppCompatActivity {
         tvRssi.setText("信号值：--");
         tvRssi.setTextSize(14);
 
+        TextView tvDist = new TextView(this);
+        tvDist.setText("估算距离：--");
+        tvDist.setTextSize(16);
+
         RadarView radar = new RadarView(this);
         radar.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Math.round(300 * density)));
@@ -662,6 +667,7 @@ public class MainActivity extends AppCompatActivity {
 
         root.addView(tvInfo);
         root.addView(tvRssi);
+        root.addView(tvDist);
         root.addView(radar);
         root.addView(chkLed);
         root.addView(btnStop);
@@ -697,13 +703,17 @@ public class MainActivity extends AppCompatActivity {
                 final float rssi = best[0];
                 runOnUiThread(() -> {
                     if (!locating) return;
-                    radar.setRssiDbm(rssi);
                     if (rssi <= -120) {
+                        radar.setRssiDbm(rssi, Float.NaN);
                         tvRssi.setText("信号值：未捕捉到目标标签（请移动设备靠近）");
+                        tvDist.setText("估算距离：--");
                     } else {
+                        float dist = FormatUtil.estimateDistanceMeters(rssi, txPower);
+                        radar.setRssiDbm(rssi, dist);
                         int sig = Math.max(0, Math.min(254, Math.round((rssi + 90f) * 254f / 60f)));
                         tvRssi.setText("信号值：" + sig + " / 254（" + Math.round(rssi) + " dBm）"
                                 + (sig >= 220 ? "  → 就在附近！" : ""));
+                        tvDist.setText("估算距离：" + FormatUtil.formatDistance(dist));
                     }
                 });
                 try { Thread.sleep(80); } catch (InterruptedException e) { break; }

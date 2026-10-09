@@ -5,6 +5,8 @@ import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.view.View;
 
+import com.example.rfidwriter.util.FormatUtil;
+
 /**
  * 标签定位雷达图。
  * 同心圆 + 十字线 + 旋转扫描线（青色）+ 红色目标点。
@@ -15,11 +17,13 @@ public class RadarView extends View {
 
     private float mStrength = 0f;   // 0..1，1 = 信号最强（标签就在眼前）
     private float mSweepDeg = 0f;   // 扫描线当前角度
+    private String mDistance = "--"; // 估算距离文本（米）
 
     private final Paint mCircle = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mLine = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mSweep = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mDot = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mText = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public RadarView(Context c) {
         super(c);
@@ -32,12 +36,22 @@ public class RadarView extends View {
         mSweep.setColor(0xFF00BCD4);            // 青色扫描线
         mDot.setStyle(Paint.Style.FILL);
         mDot.setColor(0xFFE53935);              // 红色目标点
+        mText.setColor(0xFFE53935);             // 距离文本（与红点同色）
+        mText.setTextSize(28f);
+        mText.setTextAlign(Paint.Align.CENTER);
     }
 
     /** 用 dBm 设置信号强度（-90..-30 映射到 0..1） */
     public void setRssiDbm(float dbm) {
         float s = (dbm + 90f) / 60f;
         mStrength = Math.max(0f, Math.min(1f, s));
+        invalidate();
+    }
+
+    /** 设置信号强度并显示估算距离（米），distance 传 NaN 表示未捕捉到信号 */
+    public void setRssiDbm(float dbm, float distanceMeters) {
+        setRssiDbm(dbm);
+        mDistance = FormatUtil.formatDistance(distanceMeters);
         invalidate();
     }
 
@@ -65,6 +79,9 @@ public class RadarView extends View {
         float dr = (1f - mStrength) * R;
         canvas.drawCircle(cx + (float) Math.cos(rad) * dr,
                 cy + (float) Math.sin(rad) * dr, 10f, mDot);
+
+        // 圆心上方显示估算距离
+        canvas.drawText(mDistance, cx, cy - R - 6f, mText);
 
         postInvalidateDelayed(30); // 持续动画
     }

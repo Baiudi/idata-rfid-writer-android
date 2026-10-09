@@ -391,6 +391,39 @@ public class FormatUtil {
         }
     }
 
+    // ----------------- 距离估算（UHF 定位） -----------------
+
+    /**
+     * 由 RSSI(dBm) 与发射功率(dBm) 估算标签到读卡器的距离（米）。
+     *
+     * 采用自由空间路径损耗(FSPL)近似：
+     *   d(m) = 10^((Pt - RSSI - CAL)/20)
+     * 其中 CAL 为标定常数，吸收天线增益、线缆/系统损耗等因素。
+     *
+     * ⚠️ 这是粗估，受环境多径、人体遮挡、标签朝向影响很大；真机需现场标定 CAL。
+     *    标定方法：站在 1m、3m、5m 处读 RSSI，反解 CAL = Pt - RSSI - 20*log10(d)。
+     *
+     * @param rssiDbm    接收信号强度，范围约 -90..-30 dBm
+     * @param txPowerDbm 读卡器发射功率（定位时通常用高功率，如 30 dBm）
+     * @return 估算距离（米），无信号时返回 Float.NaN
+     */
+    public static float estimateDistanceMeters(float rssiDbm, float txPowerDbm) {
+        if (rssiDbm <= -120f) return Float.NaN;
+        final float CAL = 84f; // 标定常数（默认按模拟/典型手持调校；真机请现场标定）
+        float exponent = (txPowerDbm - rssiDbm - CAL) / 20f;
+        float d = (float) Math.pow(10f, exponent);
+        if (d < 0.05f) d = 0.05f;
+        if (d > 20f) d = 20f;
+        return d;
+    }
+
+    /** 把距离格式化为易读字符串（≥1000m 用 km，否则用 m，保留 1 位小数） */
+    public static String formatDistance(float meters) {
+        if (Float.isNaN(meters)) return "--";
+        if (meters >= 1000f) return String.format(java.util.Locale.ROOT, "%.2f km", meters / 1000f);
+        return String.format(java.util.Locale.ROOT, "%.2f 米", meters);
+    }
+
     // ----------------- 内部辅助 -----------------
 
     private static String nz(String s) { return s == null ? "" : s; }
