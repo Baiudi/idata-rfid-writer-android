@@ -85,33 +85,78 @@
         android:textStyle="bold"
         android:text="@string/single_section" />
 
-    <EditText
-        android:id="@+id/etSingleAsset"
+    <!-- 半宽输入框：下划线只占屏幕一半 -->
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:inputType="text"
-        android:hint="@string/hint_single_asset" />
+        android:orientation="horizontal"
+        android:weightSum="1">
+        <EditText
+            android:id="@+id/etSingleAsset"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="0.5"
+            android:inputType="text"
+            android:hint="@string/hint_single_asset" />
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="0.5" />
+    </LinearLayout>
 
-    <EditText
-        android:id="@+id/etLocation"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:inputType="text"
-        android:hint="@string/hint_location" />
+        android:orientation="horizontal"
+        android:weightSum="1">
+        <EditText
+            android:id="@+id/etLocation"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="0.5"
+            android:inputType="text"
+            android:hint="@string/hint_location" />
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="0.5" />
+    </LinearLayout>
 
-    <EditText
-        android:id="@+id/etDept"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:inputType="text"
-        android:hint="@string/hint_dept" />
+        android:orientation="horizontal"
+        android:weightSum="1">
+        <EditText
+            android:id="@+id/etDept"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="0.5"
+            android:inputType="text"
+            android:hint="@string/hint_dept" />
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="0.5" />
+    </LinearLayout>
 
-    <EditText
-        android:id="@+id/etOwner"
+    <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:inputType="text"
-        android:hint="@string/hint_owner" />
+        android:orientation="horizontal"
+        android:weightSum="1">
+        <EditText
+            android:id="@+id/etOwner"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_weight="0.5"
+            android:inputType="text"
+            android:hint="@string/hint_owner" />
+        <Space
+            android:layout_width="0dp"
+            android:layout_height="1dp"
+            android:layout_weight="0.5" />
+    </LinearLayout>
 
     <LinearLayout
         android:layout_width="match_parent"
