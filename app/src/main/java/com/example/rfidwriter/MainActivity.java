@@ -555,8 +555,8 @@ public class MainActivity extends AppCompatActivity {
         box.addView(tip);
         box.addView(lv);
         Button btnSave = new Button(this);
-        btnSave.setText("保存盘点CSV");
-        btnSave.setOnClickListener(v -> saveInventoryCsv());
+        btnSave.setText("保存盘点Excel");
+        btnSave.setOnClickListener(v -> saveInventoryExcel());
         box.addView(btnSave);
 
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
@@ -596,27 +596,34 @@ public class MainActivity extends AppCompatActivity {
         }
     }
 
-    /** 保存盘点结果 CSV（Excel 可直接打开，带 BOM 防中文乱码） */
-    private void saveInventoryCsv() {
+    /** 保存盘点结果 Excel（.xlsx，已登记条目附带资产名称） */
+    private void saveInventoryExcel() {
         if (invStats.isEmpty()) { Toast.makeText(this, "暂无盘点数据", Toast.LENGTH_SHORT).show(); return; }
         try {
             java.io.File dir = getExternalFilesDir(null);
             if (dir == null) dir = getFilesDir();
             java.io.File f = new java.io.File(dir, "inventory-"
-                    + new SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA).format(new Date()) + ".csv");
-            StringBuilder sb = new StringBuilder("\uFEFFepc,count,rssi_dbm,registered\r\n");
+                    + new SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA).format(new Date()) + ".xlsx");
+            String[] headers = {"EPC/资产编码", "资产名称", "盘点次数", "最大RSSI(dBm)", "登记状态"};
+            List<String[]> rows = new ArrayList<>();
             for (int i = 0; i < invEpcs.size(); i++) {
-                int[] s = invStats.get(invEpcs.get(i));
+                String epc = invEpcs.get(i);
+                int[] s = invStats.get(epc);
+                String name = "";
                 boolean registered = false;
                 for (WriteResult w : ledger) {
-                    if (invEpcs.get(i).equals(w.assetNo)) { registered = true; break; }
+                    if (epc.equals(w.assetNo)) {
+                        registered = true;
+                        name = nz(w.assetName);
+                        break;
+                    }
                 }
-                sb.append(invEpcs.get(i)).append(',').append(s[0]).append(',')
-                  .append(s[1] <= -120 ? "" : String.valueOf(s[1])).append(',')
-                  .append(registered ? "1" : "0").append("\r\n");
+                rows.add(new String[]{epc, name, String.valueOf(s[0]),
+                        s[1] <= -120 ? "" : String.valueOf(s[1]),
+                        registered ? "已登记" : "未登记"});
             }
             java.io.FileOutputStream fos = new java.io.FileOutputStream(f);
-            fos.write(sb.toString().getBytes(StandardCharsets.UTF_8));
+            fos.write(FormatUtil.buildTableXlsx("盘点结果", headers, rows));
             fos.close();
             Toast.makeText(this, "盘点结果已保存:\n" + f.getAbsolutePath(), Toast.LENGTH_LONG).show();
         } catch (Exception e) {

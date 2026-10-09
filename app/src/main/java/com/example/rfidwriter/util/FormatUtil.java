@@ -281,6 +281,16 @@ public class FormatUtil {
                 {"", "202600101", "Dell OptiPlex 7080", "台式机", "2026-03-01", "4500", "IT部", "王凯明", "A栋3楼-01", "示例行，导入前可删除"},
                 {"", "202600102", "HP LaserJet M454", "打印机", "2025-11-15", "3200", "财务部", "李会计", "B栋1楼-03", ""},
         };
+        List<String[]> rows = new ArrayList<>();
+        java.util.Collections.addAll(rows, samples);
+        return buildTableXlsx("资产台账", headers, rows);
+    }
+
+    /**
+     * 生成通用单工作表 .xlsx（零第三方依赖）。
+     * 纯数字单元格写为数值类型（Excel 可直接求和/排序），其余写为文本。
+     */
+    public static byte[] buildTableXlsx(String sheetName, String[] headers, List<String[]> rows) throws Exception {
         StringBuilder sheetData = new StringBuilder();
         sheetData.append("<row r=\"1\">");
         for (int i = 0; i < headers.length; i++) {
@@ -288,13 +298,20 @@ public class FormatUtil {
                     .append(xmlEscape(headers[i])).append("</t></is></c>");
         }
         sheetData.append("</row>");
-        for (int r = 0; r < samples.length; r++) {
+        for (int r = 0; r < rows.size(); r++) {
             sheetData.append("<row r=\"").append(r + 2).append("\">");
-            for (int c = 0; c < samples[r].length; c++) {
-                String v = samples[r][c];
-                if (v == null || v.isEmpty()) continue;
-                sheetData.append("<c r=\"").append(colIndexToName(c)).append(r + 2)
-                        .append("\" t=\"inlineStr\"><is><t>").append(xmlEscape(v)).append("</t></is></c>");
+            String[] row = rows.get(r);
+            for (int c = 0; c < row.length; c++) {
+                String v = row[c] == null ? "" : row[c].trim();
+                if (v.isEmpty()) continue;
+                if (v.matches("-?\\d+(\\.\\d+)?")) {
+                    // 数值单元格（无 t 属性）
+                    sheetData.append("<c r=\"").append(colIndexToName(c)).append(r + 2).append("\"><v>")
+                            .append(xmlEscape(v)).append("</v></c>");
+                } else {
+                    sheetData.append("<c r=\"").append(colIndexToName(c)).append(r + 2)
+                            .append("\" t=\"inlineStr\"><is><t>").append(xmlEscape(v)).append("</t></is></c>");
+                }
             }
             sheetData.append("</row>");
         }
@@ -304,7 +321,7 @@ public class FormatUtil {
         String workbook = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
                 + "<workbook xmlns=\"http://schemas.openxmlformats.org/spreadsheetml/2006/main\""
                 + " xmlns:r=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships\">"
-                + "<sheets><sheet name=\"资产台账\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>";
+                + "<sheets><sheet name=\"" + xmlEscape(sheetName) + "\" sheetId=\"1\" r:id=\"rId1\"/></sheets></workbook>";
         String wbRels = "<?xml version=\"1.0\" encoding=\"UTF-8\" standalone=\"yes\"?>"
                 + "<Relationships xmlns=\"http://schemas.openxmlformats.org/package/2006/relationships\">"
                 + "<Relationship Id=\"rId1\" Type=\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet\""
