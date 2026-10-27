@@ -4,9 +4,8 @@
 直接调用 iData 官方 **jar + so SDK**，支持「导入资产台账 → 批量写标（带 TID 过滤 + 回读校验）→ 写后同步到钉钉资产台账（dws）」。
 
 > 这是一个**完整、可直接用 Android Studio / Gradle 编译出 APK 的 Android 工程**（已含 Gradle Wrapper）。
-> **关键改进：即使没有厂商 iData UHF SDK，也能编译出可安装的 APK**——此时 App 以「模拟模式」运行，
-> 用于 UI 联调与「导入台账 → 批量写标 → 回读校验 → 落库 → 导出」全流程验证；
-> 接入真实 RFID 时，放入 SDK jar/so 并在 `IdataUhfAdapter` 补全 `TODO-SDK` 即可（界面取消勾选「模拟模式」）。
+> 工程**只保留真实 iData UHF 适配器**：即使没有厂商 SDK 也能编译出可安装的 APK（RFID 功能需补全 `IdataUhfAdapter` 的 `TODO-SDK` 后方可使用）；
+> 接入真实 RFID 时，放入 SDK jar/so 并在 `IdataUhfAdapter` 补全 `TODO-SDK` 即可。
 
 ---
 
@@ -17,7 +16,6 @@
 | 全部源码 / 布局 / 配置 | ✅ 已包含 | `app/src/...`、`build.gradle` 等 |
 | Gradle Wrapper（`gradlew` / `gradlew.bat` / `gradle-wrapper.jar`） | ✅ 已包含 | 直接可命令行构建，无需单独装 Gradle |
 | 示例台账 `sample-ledger.csv` | ✅ 已包含 | 上机前先拿它试跑 |
-| **「模拟模式」适配器 `SimulatedRfidAdapter`** | ✅ 已包含 | 无硬件/无 SDK 也能跑通全流程 |
 | **iData UHF SDK（`idata-uhf-sdk.jar` + `*.so`）** | ⚠️ 接真实 RFID 才需要 | 厂商专有库，放 `app/libs/` 与 `app/src/main/jniLibs/<abi>/`；**缺失不影响构建** |
 | **JDK 17** | ❌ 需你准备 | 构建 Android（AGP 8.2）需要 |
 | **Android SDK / Android Studio** | ❌ 需你准备 | 编译 + 真机安装 |
@@ -30,7 +28,7 @@
 1. 把本工程推到 GitHub 仓库（已内置 `.github/workflows/build.yml`）。
 2. 在仓库 `Actions → Build APK → Run workflow` 手动触发（或 push 到 main/master 自动触发）。
 3. 构建完成后在 `Artifacts` 下载 `app-debug-apk`，即得到可安装的 `app-debug.apk`。
-4. 该 APK 是「模拟模式」构建（因云端无厂商 SDK），用于流程验证；接真实 RFID 时在本地按路径 B/C 构建。
+4. 云端无厂商 SDK，因此下载的 APK 内 RFID 功能为「无 SDK 桩」，需在 `IdataUhfAdapter` 补全 `TODO-SDK` 后才能真正读写标签；接真实 RFID 时在本地按路径 B/C 构建。
 
 > 完整图文步骤（新建空仓库 → 一键推送 → 触发 → 下载 → 安装）→ 见 **[DEPLOY.md](DEPLOY.md)**。
 > 不想敲命令可直接双击 **`push_to_github.bat`** 完成推送。
@@ -56,7 +54,7 @@
 
 > 构建时 Gradle 会自动从 `google()` / `mavenCentral()` 下载 AndroidX、Gradle 发行包等依赖（需联网）。
 > `app/build.gradle` 已改为**条件依赖**：仅当 `app/libs/idata-uhf-sdk.jar` 存在时才引入它，
-> 因此**未放 SDK 也能编译**，此时自动以「模拟模式」出包（构建日志会打印提示）。
+> 因此**未放 SDK 也能编译**，但此时 App 内为「无 SDK 桩」，RFID 读写需在 `IdataUhfAdapter` 补全 `TODO-SDK`（构建日志会打印提示）。
 
 ---
 
@@ -72,7 +70,7 @@ app/src/main/jniLibs/armeabi-v7a/*.so      <- 32 位（兼容）
 ```
 
 （`app/libs/README.md`、`app/src/main/jniLibs/README.md` 有详细说明。）
-放好后重新构建，并在 App 界面**取消勾选「模拟模式」**。
+放好后重新构建即可；App 仅保留真实 iData 适配器，无需任何开关切换。
 
 ---
 
@@ -170,22 +168,21 @@ idata-rfid-writer-android/
 ├── sample-ledger.csv                         # 示例台账（上机试跑用）
 ├── sync_to_dws.py                            # PC 端：写标结果回写钉钉在线电子表格
 ├── app/
-│   ├── build.gradle                          # 条件依赖：有 jar 才引入 iData SDK（否则模拟模式）
+│   ├── build.gradle                          # 条件依赖：有 jar 才引入 iData SDK（缺失则为无 SDK 桩）
 │   ├── libs/README.md                        # jar 放置说明
 │   ├── src/main/
 │   │   ├── AndroidManifest.xml
 │   │   ├── jniLibs/README.md                 # so 放置说明
 │   │   ├── java/com/example/rfidwriter/
-│   │   │   ├── MainActivity.java             # 主界面 + 批量写标编排（含「模拟模式」开关）
+│   │   │   ├── MainActivity.java             # 主界面 + 批量写标编排
 │   │   │   ├── rfid/
 │   │   │   │   ├── RfidSdk.java              # UHF 操作抽象接口（业务只依赖它）
 │   │   │   │   ├── IdataUhfAdapter.java      # iData 原生 SDK 适配层（唯一碰 SDK 处，含 TODO-SDK）
-│   │   │   │   ├── SimulatedRfidAdapter.java # 模拟适配器（无硬件/无 SDK 跑全流程）
 │   │   │   │   └── TagInfo.java
 │   │   │   ├── db/   WriteResult.java / ResultDbHelper.java   # SQLite 持久化
 │   │   │   ├── sync/ SyncManager.java        # 导出 JSON / 可选 HTTP 上报
 │   │   │   └── util/ FormatUtil.java         # ASCII<->Hex、CSV、JSON
-│   │   └── res/...                           # 布局与字符串（含 chkSimulate 模拟开关）
+│   │   └── res/...                           # 布局与字符串
 ├── build.gradle / settings.gradle / gradle.properties / local.properties
 ```
 
@@ -193,8 +190,7 @@ idata-rfid-writer-android/
 
 ## 十、注意事项
 
-- **模拟模式**：App 默认勾选「模拟模式」，无硬件/无 SDK 也能完整体验写标流程（标签/TID 为随机虚拟值，回读校验通过）。
-  接真实 RFID 后取消勾选即可切换为 `IdataUhfAdapter`。
+- App 仅保留真实 iData 适配器；无 SDK 时 `IdataUhfAdapter` 为占位桩，连接会提示「UHF 初始化失败」，需在 `IdataUhfAdapter` 补全 `TODO-SDK` 后方可读写标签。
 - 写单张标签务必**低功率 + 单张靠近天线**，否则可能误写邻近标签（官方 SDK 文档明确提醒）。
 - 标签若改过访问密码，把 `MainActivity.PWD` / `IdataUhfAdapter` 里的 `00000000` 改成实际密码。
 - 首机上机请小批量试写，验证 EPC 长度与 PC（协议控制）字段是否正确。

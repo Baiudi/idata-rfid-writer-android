@@ -9,8 +9,8 @@ REM    2) 已安装 Android SDK，或 local.properties 已填 sdk.dir
 REM       （若设置了 ANDROID_HOME 会自动采用，无需 local.properties）
 REM    3) 接入真实 RFID 才需要：
 REM         app/libs/idata-uhf-sdk.jar 与 app/src/main/jniLibs/<abi>/*.so
-REM       【未放 SDK 也能构建】—— 此时 App 以「模拟模式」运行（无真实射频），
-REM       用于 UI 联调与流程验证，详见 README。
+REM       【未放 SDK 也能构建】—— 此时 App 内 RFID 为「无 SDK 桩」（无真实射频），
+REM       仅在 IdataUhfAdapter 补全 TODO-SDK 后方可读写标签，详见 README。
 REM  用法：在命令行 / 双击运行本文件
 REM ============================================================
 setlocal
@@ -32,7 +32,7 @@ if not exist "local.properties" (
 
 echo ============================================================
 echo  构建 Debug APK（无需签名，可直接安装到 T1 UHF 调试）
-echo  （未检测到 iData SDK 时将以「模拟模式」构建）
+echo  （未检测到 iData SDK 时为「无 SDK 桩」构建，RFID 需补全 TODO-SDK）
 echo ============================================================
 call gradlew.bat assembleDebug %*
 if errorlevel 1 goto :fail
@@ -58,7 +58,7 @@ echo   - Android SDK 路径未配置：设置 ANDROID_HOME 或 local.properties 
 echo   - JDK 版本不对：需 JDK 17（与 compileSdk/AGP 8.2 匹配）
 echo   - 网络问题：首次构建需联网下载 Gradle 与 androidx 依赖
 echo.
-echo  注：未放入 iData SDK 不会导致构建失败，只会以「模拟模式」出包。
+echo  注：未放入 iData SDK 不会导致构建失败，仅 RFID 功能为「无 SDK 桩」，需在 IdataUhfAdapter 补全 TODO-SDK。
 exit /b 1
 
 :ok

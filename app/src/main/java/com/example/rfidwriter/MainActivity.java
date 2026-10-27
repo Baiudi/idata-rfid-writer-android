@@ -27,7 +27,6 @@ import com.example.rfidwriter.db.ResultDbHelper;
 import com.example.rfidwriter.db.WriteResult;
 import com.example.rfidwriter.rfid.IdataUhfAdapter;
 import com.example.rfidwriter.rfid.RfidSdk;
-import com.example.rfidwriter.rfid.SimulatedRfidAdapter;
 import com.example.rfidwriter.rfid.TagInfo;
 import com.example.rfidwriter.sync.SyncManager;
 import com.example.rfidwriter.util.FormatUtil;
@@ -62,7 +61,6 @@ public class MainActivity extends AppCompatActivity {
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
     private ResultAdapter adapter;
-    private android.widget.CheckBox chkSimulate;
 
     private EditText etPower, etModule, etBank, etStartWord, etSingleAsset, etLocation, etDept, etOwner;
     private TextView tvStatus, tvProgress, tvDetected, tvSingleResult;
@@ -107,7 +105,6 @@ public class MainActivity extends AppCompatActivity {
         tvProgress = findViewById(R.id.tvProgress);
         btnStartWrite = findViewById(R.id.btnStartWrite);
         btnSync = findViewById(R.id.btnSync);
-        chkSimulate = findViewById(R.id.chkSimulate);
         etSingleAsset = findViewById(R.id.etSingleAsset);
         etLocation = findViewById(R.id.etLocation);
         etDept = findViewById(R.id.etDept);
@@ -120,19 +117,6 @@ public class MainActivity extends AppCompatActivity {
         rv.setLayoutManager(new LinearLayoutManager(this));
         adapter = new ResultAdapter(ledger);
         rv.setAdapter(adapter);
-
-        // 根据「模拟模式」开关选择适配器（默认勾选 -> 模拟适配器，无硬件即可跑全流程）
-        applyAdapter(chkSimulate.isChecked());
-        chkSimulate.setOnCheckedChangeListener((buttonView, isChecked) -> {
-            if (writing) {
-                Toast.makeText(this, "写标进行中，暂不能切换模式", Toast.LENGTH_SHORT).show();
-                buttonView.setChecked(!isChecked);
-                return;
-            }
-            sdk.release();
-            applyAdapter(isChecked);
-            setStatus(isChecked ? "已切换为模拟模式" : "已切换为真实 iData 模式（需已放入 SDK 并补全 TODO-SDK）");
-        });
 
         findViewById(R.id.btnConnect).setOnClickListener(v -> connect());
         findViewById(R.id.btnDisconnect).setOnClickListener(v -> {
@@ -230,12 +214,6 @@ public class MainActivity extends AppCompatActivity {
     }
 
     // ----------------- 连接 / 参数 -----------------
-
-    /** 按「模拟模式」开关切换底层适配器 */
-    private void applyAdapter(boolean simulate) {
-        sdk = simulate ? new SimulatedRfidAdapter() : new IdataUhfAdapter();
-        setStatus(simulate ? "模拟模式就绪（未连接）" : "真实 iData 模式就绪（未连接）");
-    }
 
     private void connect() {
         int module = parseInt(etModule, 0);
@@ -970,7 +948,14 @@ public class MainActivity extends AppCompatActivity {
         try {
             List<WriteResult> all = db.getAll();
             java.io.File f = SyncManager.exportResultsJson(this, all);
-            byte[] data = java.nio.file.Files.readAllBytes(f.toPath());
+            byte[] data;
+            try (java.io.FileInputStream fis = new java.io.FileInputStream(f)) {
+                java.io.ByteArrayOutputStream bos = new java.io.ByteArrayOutputStream();
+                byte[] buf = new byte[8192];
+                int n;
+                while ((n = fis.read(buf)) > 0) bos.write(buf, 0, n);
+                data = bos.toByteArray();
+            }
             String where = saveToDownloads(f.getName(), data);
             if (where != null) {
                 Toast.makeText(this, "已保存到手机「下载/RFID盘点」文件夹：\n" + f.getName(), Toast.LENGTH_LONG).show();

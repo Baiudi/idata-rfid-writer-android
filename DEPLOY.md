@@ -3,8 +3,8 @@
 适用场景：本机**没有**装 Android Studio / JDK17 / Android SDK，但你想拿到一个可安装的 `app-debug.apk`。
 本工程已内置 `.github/workflows/build.yml`，只要推到 GitHub，云端（ubuntu 机器）就会自动编译并产出 APK 构件。
 
-> 注意：云端构建**没有**厂商 iData UHF SDK，产出的 APK 是「**模拟模式**」版，用于验证 App 界面与「导入台账 → 批量写标 → 回读校验 → 落库 → 导出」全流程。
-> 要真能往标签写数据，需按 README 路径 B/C 在本机放入 SDK 后重新构建，并在 App 里取消勾选「模拟模式」。
+> 注意：云端构建**没有**厂商 iData UHF SDK，产出的 APK 内 RFID 功能为「无 SDK 桩」，用于验证 App 界面与「导入台账 → 批量写标 → 回读校验 → 落库 → 导出」全流程。
+> 要真能往标签写数据，需按 README 路径 B/C 在本机放入 SDK 并在 `IdataUhfAdapter` 补全 `TODO-SDK` 后重新构建。
 
 ---
 
@@ -78,4 +78,4 @@ git push -u origin main
 - **Private 仓库 Actions 额度**：免费账号每月 2000 分钟，偶尔构建绰绰有余。
 - **构建失败**：先看 Actions 日志。最常见是 SDK 包安装较慢或网络抖动，直接 **Re-run jobs** 重试。
 - **push 被拒**：检查仓库地址是否正确、仓库是否真的是空仓库（不能带 README）、本机是否已登录 GitHub。
-- **想产出“真实写标版”APK**：云端无法放厂商 SDK，请用 README 路径 B/C 在本机构建（放入 `app/libs/*.jar` 与 `jniLibs/*.so` 后取消模拟模式）。
+- **想产出“真实写标版”APK**：云端无法放厂商 SDK，请用 README 路径 B/C 在本机构建（放入 `app/libs/*.jar` 与 `jniLibs/*.so` 并在 `IdataUhfAdapter` 补全 `TODO-SDK`）。
