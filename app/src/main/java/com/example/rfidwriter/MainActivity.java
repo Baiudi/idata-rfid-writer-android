@@ -90,6 +90,9 @@ public class MainActivity extends AppCompatActivity {
         super.onCreate(b);
         setContentView(R.layout.activity_main);
         db = new ResultDbHelper(this);
+        // 把 Context 交给 RFID 适配器：它需要用 assets 里的 uhf_sdk.dex 在运行时构造 DexClassLoader。
+        // （iData UHF SDK 无法直接拿到 aar，改为把真机预装 UHF Demo 的 classes.dex 作为资源打入 APK。）
+        ((IdataUhfAdapter) sdk).attach(this);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
         if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
