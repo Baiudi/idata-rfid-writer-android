@@ -87,6 +87,9 @@ public class IdataUhfAdapter implements RfidSdk {
         if (!dexFile.exists() || dexFile.length() != EXPECTED_DEX_SIZE) {
             copyAsset(dexFile);
         }
+        // Android 9+ 拒绝加载“可写”的 dex 文件，必须先设为只读（否则 SecurityException:
+        // Writable dex file ... is not allowed）
+        dexFile.setReadOnly();
         File optDir = mContext.getCodeCacheDir();   // DexClassLoader 的 odex 优化目录（API21+，minSdk24 满足）
         mLoader = new DexClassLoader(dexFile.getAbsolutePath(), optDir.getAbsolutePath(), null, mContext.getClassLoader());
         mUhfClass = mLoader.loadClass(SDK_CLASS);
