@@ -2,6 +2,8 @@ package com.example.rfidwriter;
 
 import android.app.Activity;
 import android.content.Intent;
+import android.content.BroadcastReceiver;
+import android.content.IntentFilter;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -58,6 +60,9 @@ public class MainActivity extends AppCompatActivity {
     private static final String INFO_MAGIC = "R2";         // USER 区结构化信息前缀（v2：八个自定义字段）
 
     private RfidSdk sdk = new IdataUhfAdapter();
+    /** 远程/自动化测试钩子：收到该 action 广播即触发「连接 UHF」（等价于手动点“连接UHF”按钮） */
+    public static final String ACTION_CONNECT = "com.example.rfidwriter.action.CONNECT";
+    private BroadcastReceiver mConnectReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
     private ResultAdapter adapter;

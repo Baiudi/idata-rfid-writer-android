@@ -178,6 +178,7 @@ public class IdataUhfAdapter implements RfidSdk {
                 Object r = mUhfClass.getMethod("powerOn").invoke(mUhf);
                 ok = r instanceof Boolean && (Boolean) r;
                 msg = ok ? "UHF 已连接" : "UHF 初始化失败（powerOn 返回 false，请确认设备 UHF 模块正常）";
+                Log.i(TAG, "init: powerOn=" + ok + " moduleType=" + mModuleType);
             } catch (Throwable e) {
                 msg = "UHF 初始化异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
                 Log.e(TAG, "init failed", e);
@@ -257,6 +258,7 @@ public class IdataUhfAdapter implements RfidSdk {
                 if (r instanceof String && !((String) r).isEmpty()) {
                     data = (String) r;
                     ok = true;
+                    Log.i(TAG, "readTag: ok bank=" + bank + " ptr=" + wordAddr + " len=" + wordLen + " hex=" + data);
                 } else {
                     msg = "读取为空（未读到标签，请确认天线范围内有标签）";
                 }
