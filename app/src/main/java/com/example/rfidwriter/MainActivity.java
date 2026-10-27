@@ -819,8 +819,8 @@ public class MainActivity extends AppCompatActivity {
                 if (tag == null) {
                     runOnUiThread(() -> {
                         if (tvDetected != null)
-                            tvDetected.setText("检测到的标签：无（请确保天线范围内仅一张标签，并已点「连接UHF」）");
-                        setStatus("读取完成：未检测到标签");
+                            tvDetected.setText("检测到的标签：无（请确认已点「连接UHF」，且天线范围内【仅一张】标签；\n多张会判定为多标签而放弃读取）");
+                        setStatus("读取完成：未检测到唯一单张标签");
                     });
                     return;
                 }

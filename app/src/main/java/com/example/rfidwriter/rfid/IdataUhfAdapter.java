@@ -131,31 +131,38 @@ public class IdataUhfAdapter implements RfidSdk {
 
     /**
      * 解析单条标签信息串。iData UHF 回调通常返回 EPC 的 hex 串；
-     * 部分模式下会用 '|' 或 ',' 追加 TID/RSSI，这里做兼容拆分。
+     * 部分模式下会用 '|' / ',' / '#' / 空白 追加 TID/RSSI。
+     *
+     * 关键修复：回调里常夹杂纯 RSSI 数值（如 "-40"）。旧逻辑会把整串或首段直接当 EPC，
+     * 导致 RSSI 被误判成“另一张标签”，单张检测 seen 集合出现幻影条目、seen.size()>1 而判定“多张”放弃读取。
+     * 这里只把【偶长度、纯 0-9A-F 的 hex 串】认作 EPC，纯数字串认作 RSSI，其余忽略，确保单张检测准确。
      */
     private TagInfo parseTag(String raw) {
         TagInfo t = new TagInfo();
+        if (raw == null) return t;
         String s = raw.trim();
-        String[] parts = null;
-        if (s.contains("|")) parts = s.split("\\|");
-        else if (s.contains(",")) parts = s.split(",");
-
-        if (parts != null && parts.length > 0) {
-            t.epc = parts[0].trim();
-            if (parts.length > 1) t.tid = parts[1].trim();
-            // 尝试从后续字段里挑一个像 RSSI 的数值
-            for (int i = 1; i < parts.length; i++) {
-                String p = parts[i].trim();
-                try {
-                    Integer.parseInt(p);
-                    t.rssi = p;
-                    break;
-                } catch (NumberFormatException ignore) { /* not a number */ }
+        if (s.isEmpty()) return t;
+        String[] parts = s.split("[|,#\\s]+");
+        for (String p : parts) {
+            p = p.trim();
+            if (p.isEmpty()) continue;
+            if (t.epc == null && isHexEpc(p)) {
+                t.epc = p;
+            } else if (t.rssi == null && p.matches("-?\\d+(\\.\\d+)?")) {
+                t.rssi = p;
             }
-        } else {
-            t.epc = s;
         }
         return t;
+    }
+
+    /** 判断是否为合法 EPC hex：偶长度、仅 0-9A-Fa-f、至少 4 字符（2 字节） */
+    private static boolean isHexEpc(String p) {
+        if (p.length() < 4 || (p.length() % 2) != 0) return false;
+        for (int i = 0; i < p.length(); i++) {
+            char c = p.charAt(i);
+            if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) return false;
+        }
+        return true;
     }
 
     // ------------------------------------------------------------------
