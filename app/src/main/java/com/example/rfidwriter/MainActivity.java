@@ -102,13 +102,13 @@ public class MainActivity extends AppCompatActivity {
     private boolean locateFromInventory = false;   // 本次定位是否由盘点弹窗发起（关闭后自动回盘点）
 
     // ----------------- 手柄按键（设备扳机/扫描键）映射 -----------------
-    // 第一次在读取/盘点页按下候选键之一时，自动记住该 keyCode 作为“手柄触发键”（持久化），
-    // 之后按该键即触发对应操作。候选范围覆盖 iData T1U 常见映射（F1~F4 / 手柄 L1 R1 A B / 相机键）。
-    private static final Set<Integer> HANDLE_CANDIDATES = new HashSet<>(Arrays.asList(
-            KeyEvent.KEYCODE_F1, KeyEvent.KEYCODE_F2, KeyEvent.KEYCODE_F3, KeyEvent.KEYCODE_F4,
-            KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1,
-            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B,
-            KeyEvent.KEYCODE_CAMERA));
+    // 在「读取标签/盘点」页第一次按下任意【非系统】键时，自动记住该 keyCode 作为“手柄触发键”（持久化），
+    // 之后按该键即触发对应操作。这样不依赖具体机型把扳机映射成哪个 keyCode（F1/手柄键/相机键…都行）。
+    // 系统键（返回/Home/电源/音量等）不参与学习，避免误绑。
+    private static final Set<Integer> SYSTEM_KEYS_NO_LEARN = new HashSet<>(Arrays.asList(
+            KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_HOME, KeyEvent.KEYCODE_APP_SWITCH,
+            KeyEvent.KEYCODE_POWER, KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN,
+            KeyEvent.KEYCODE_VOLUME_MUTE, KeyEvent.KEYCODE_ENDCALL, KeyEvent.KEYCODE_CALL));
     private int mHandleKey = 0;   // 0 表示尚未学习到；从偏好读取
 
     // 盘点统计：epc -> [次数, 最大RSSI(dBm)]
@@ -504,8 +504,8 @@ public class MainActivity extends AppCompatActivity {
             int code = e.getKeyCode();
             if (currentScreen == SCREEN_READ || currentScreen == SCREEN_INVENTORY) {
                 Log.i(TAG, "KEY keyCode=" + code + " screen=" + currentScreen);
-                // 尚未学习到手柄键：若是候选键之一，则记住它
-                if (mHandleKey == 0 && HANDLE_CANDIDATES.contains(code)) {
+                // 尚未学习到手柄键：按下任意非系统键即记住它（兼容各机型扳机映射）
+                if (mHandleKey == 0 && !SYSTEM_KEYS_NO_LEARN.contains(code)) {
                     mHandleKey = code;
                     prefs.edit().putInt("handleKey", code).apply();
                     Log.i(TAG, "HANDLE_KEY learned=" + code);
