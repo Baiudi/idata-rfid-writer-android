@@ -62,7 +62,11 @@ public class MainActivity extends AppCompatActivity {
     private RfidSdk sdk = new IdataUhfAdapter();
     /** 远程/自动化测试钩子：收到该 action 广播即触发「连接 UHF」（等价于手动点“连接UHF”按钮） */
     public static final String ACTION_CONNECT = "com.example.rfidwriter.action.CONNECT";
-    private BroadcastReceiver mConnectReceiver;
+    /** 远程只读测试钩子：am broadcast -a ...READ_TEST 触发「连(若未连)→检测单张→读TID/EPC/USER」，日志前缀 RFID_TEST */
+    public static final String ACTION_READ_TEST = "com.example.rfidwriter.action.READ_TEST";
+    /** 远程写测试钩子：am broadcast -a ...WRITE_TEST 触发「连(若未连)→检测单张→往USER区写测试串→回读校验」，日志前缀 RFID_TEST */
+    public static final String ACTION_WRITE_TEST = "com.example.rfidwriter.action.WRITE_TEST";
+    private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
     private ResultAdapter adapter;
@@ -99,12 +103,21 @@ public class MainActivity extends AppCompatActivity {
         // （iData UHF SDK 无法直接拿到 aar，改为把真机预装 UHF Demo 的 classes.dex 作为资源打入 APK。）
         ((IdataUhfAdapter) sdk).attach(this);
 
-        // 注册测试钩子：am broadcast -a com.example.rfidwriter.action.CONNECT 即可触发连接
+        // 注册测试钩子：shell 广播即可触发（无需脆弱的 UI 坐标点击）
         // Android 13+ 需用 RECEIVER_EXPORTED，否则 shell 发送的广播收不到（enqueued receivers=0）
-        mConnectReceiver = new BroadcastReceiver() {
-            @Override public void onReceive(android.content.Context c, Intent i) { connect(); }
+        mTestReceiver = new BroadcastReceiver() {
+            @Override public void onReceive(android.content.Context c, Intent i) {
+                String a = i.getAction();
+                if (ACTION_CONNECT.equals(a)) connect();
+                else if (ACTION_READ_TEST.equals(a)) runReadTest();
+                else if (ACTION_WRITE_TEST.equals(a)) runWriteTest();
+            }
         };
-        registerReceiver(mConnectReceiver, new IntentFilter(ACTION_CONNECT), android.content.Context.RECEIVER_EXPORTED);
+        android.content.IntentFilter testFilter = new android.content.IntentFilter();
+        testFilter.addAction(ACTION_CONNECT);
+        testFilter.addAction(ACTION_READ_TEST);
+        testFilter.addAction(ACTION_WRITE_TEST);
+        registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
         if (Build.VERSION.SDK_INT < 29 && checkSelfPermission(android.Manifest.permission.WRITE_EXTERNAL_STORAGE)
@@ -239,6 +252,92 @@ public class MainActivity extends AppCompatActivity {
                 sdk.setInventoryMode(0);
             }
         }));
+    }
+
+    // ----------------- 远程读写测试钩子（自动化验证用） -----------------
+
+    /** 远程只读测试：若未连接先连，3s 后检测唯一标签并读 TID/EPC/USER，全部以 RFID_TEST 前缀落 logcat */
+    private void runReadTest() {
+        if (sdk.isConnected()) doReadTest();
+        else { Log.i(TAG, "READ_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doReadTest(), 3000); }
+    }
+
+    /** 远程写测试：若未连接先连，3s 后检测唯一标签，往 USER 区(bank3/word0)写固定测试串，再回读校验 */
+    private void runWriteTest() {
+        if (sdk.isConnected()) doWriteTest();
+        else { Log.i(TAG, "WRITE_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doWriteTest(), 3000); }
+    }
+
+    /** 只读测试主体：检测天线范围内唯一标签，读 TID/EPC/USER 三区并打 hex + 解析日志；无唯一标签则快速盘点诊断 */
+    private void doReadTest() {
+        if (!sdk.isConnected()) { Log.w(TAG, "READ_TEST: 仍未连接 UHF，跳过"); return; }
+        sdk.setPower(parseInt(etPower, 15));
+        new Thread(() -> {
+            TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+            if (tag == null) {
+                // 没检测到“唯一”一张：做一次快速盘点，确认天线到底有没有看到标签
+                java.util.Set<String> all = java.util.Collections.newSetFromMap(
+                        new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+                CountDownLatch latch = new CountDownLatch(1);
+                sdk.startInventory(new RfidSdk.InventoryCallback() {
+                    @Override public void onTag(TagInfo t) { if (t.epc != null && !t.epc.isEmpty()) all.add(t.epc); }
+                    @Override public void onEnd() { latch.countDown(); }
+                });
+                try { latch.await(1200, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                sdk.stopInventory();
+                Log.i(TAG, "READ_TEST: 未检测到唯一单张标签；快速盘点诊断共看到 " + all.size() + " 个唯一 EPC：" + all);
+                return;
+            }
+            Log.i(TAG, "READ_TEST: 检测到标签 EPC=" + nz(tag.epc) + " TID=" + nz(tag.tid));
+            // TID（bank2, word0, 6 字）——出厂唯一，作物理身份证
+            String tidHex = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
+            Log.i(TAG, "READ_TEST: TID  hex=" + tidHex + "  ascii=" + (tidHex != null ? FormatUtil.hexToAscii(tidHex) : ""));
+            // EPC（bank1, word2, 8 字）——跳过前 2 字(CRC/PC)
+            String epcHex = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS);
+            Log.i(TAG, "READ_TEST: EPC  hex=" + epcHex + "  ascii=" + (epcHex != null ? FormatUtil.hexToAscii(epcHex) : ""));
+            // USER（bank3, word0, 16 字）
+            String userHex = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS);
+            Log.i(TAG, "READ_TEST: USER hex=" + userHex + "  utf8=" + (userHex != null ? FormatUtil.hexToUtf8(userHex) : ""));
+        }).start();
+    }
+
+    /** 写测试主体：检测唯一标签，按 TID/EPC 构造过滤条件，往 USER 区写测试串后回读校验 */
+    private void doWriteTest() {
+        if (!sdk.isConnected()) { Log.w(TAG, "WRITE_TEST: 仍未连接 UHF，跳过"); return; }
+        sdk.setPower(parseInt(etPower, 15)); // 写单张前调低功率，避免误写邻近标签
+        new Thread(() -> {
+            TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+            if (tag == null) {
+                Log.w(TAG, "WRITE_TEST: 未检测到单张标签，跳过");
+                return;
+            }
+            String[] f = buildFilter(tag);
+            int fBank = Integer.parseInt(f[0]), fStartBit = Integer.parseInt(f[1]), fLenBits = Integer.parseInt(f[2]);
+            String fData = f[3];
+            // 固定前缀 + 6 位零填零时间戳，保证偶数字节、每次不同便于回读校验
+            String testStr = String.format(java.util.Locale.ROOT, "RFIDTEST%06d", System.currentTimeMillis() % 1000000);
+            boolean ok = sdk.writeTagWithFilterSync(
+                    fBank, fStartBit, fLenBits, fData,
+                    3, 0, testStr, PWD, WRITE_TIMEOUT_MS);
+            Log.i(TAG, "WRITE_TEST: 写入 ok=" + ok + "  测试串=" + testStr);
+            if (ok) {
+                byte[] bytes = testStr.getBytes(StandardCharsets.UTF_8);
+                int wlen = (bytes.length + 1) / 2;
+                String rHex = sdk.readTagSync(3, 0, wlen, PWD, READ_TIMEOUT_MS);
+                String rStr = rHex != null ? FormatUtil.hexToUtf8(rHex) : "";
+                boolean match = rStr.startsWith(testStr);
+                Log.i(TAG, "WRITE_TEST: 回读 hex=" + rHex + "  回读utf8=" + rStr + "  校验通过=" + match);
+            }
+        }).start();
+    }
+
+    @Override
+    protected void onDestroy() {
+        if (mTestReceiver != null) {
+            try { unregisterReceiver(mTestReceiver); } catch (Throwable ignore) { }
+            mTestReceiver = null;
+        }
+        super.onDestroy();
     }
 
     // ----------------- 导入台账（Excel/CSV）与模板 -----------------
