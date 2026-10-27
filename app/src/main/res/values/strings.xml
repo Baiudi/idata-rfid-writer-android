@@ -1,16 +1,36 @@
 <resources>
     <string name="app_name">iData 资产写标工具</string>
-    <string name="hint_power">写标功率(dBm，5~33，默认15)</string>
-    <string name="hint_module">模块类型: 0=UM 1=SLR 2=GX</string>
-    <string name="hint_target_bank">信息写入区: 3=USER（资产编号固定写 EPC 区1）</string>
-    <string name="hint_start_word">信息起始字地址(Word, 默认0)</string>
+
+    <!-- 参数区（精简，避免小屏截断；详细说明见各输入框默认值与使用说明） -->
+    <string name="hint_power">写标功率 dBm（5~33，默认15）</string>
+    <string name="hint_module">模块类型（0=UM 1=SLR 2=GX）</string>
+    <string name="hint_target_bank">信息写入区（3=USER）</string>
+    <string name="hint_start_word">起始字地址 Word（默认0）</string>
+
+    <!-- 单张写入（资产编号固定写 EPC 区1；其余写 USER 区，可中文） -->
     <string name="single_section">—— 单张标签写入 ——</string>
-    <string name="hint_single_asset">资产编号（固定写入 EPC 区1，ASCII）</string>
-    <string name="hint_location">存放位置（写入 USER 区，可中文）</string>
-    <string name="hint_dept">使用部门（写入 USER 区，可中文）</string>
-    <string name="hint_owner">使用人（写入 USER 区，可中文）</string>
+    <string name="hint_single_asset">资产编号（写入EPC区1，ASCII）</string>
+    <string name="hint_location">存放位置（写入USER区，可中文）</string>
+    <string name="hint_dept">使用部门（写入USER区，可中文）</string>
+    <string name="hint_owner">使用人（写入USER区，可中文）</string>
+
+    <!-- 按钮 -->
+    <string name="btn_connect">连接UHF</string>
+    <string name="btn_disconnect">断开</string>
     <string name="btn_detect_single">检测单张标签</string>
     <string name="btn_write_single">写入这张标签</string>
+    <string name="btn_import">导入Excel/CSV</string>
+    <string name="btn_template">导出Excel模板</string>
+    <string name="btn_add_single">新增（编码自动生成）</string>
+    <string name="btn_start_write">开始批量写标</string>
+    <string name="btn_inventory">开始盘点</string>
+    <string name="btn_locate">定位标签</string>
+    <string name="btn_export">导出结果JSON</string>
+    <string name="btn_sync">同步到dws台账</string>
+
+    <!-- 状态 -->
     <string name="tv_detected">检测到的标签：无</string>
     <string name="tv_single_result">单张写入结果：未操作</string>
+    <string name="tv_status">状态：未连接</string>
+    <string name="tv_progress">进度：0 / 0</string>
 </resources>
