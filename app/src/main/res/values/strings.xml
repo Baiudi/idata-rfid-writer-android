@@ -1,13 +1,20 @@
 <resources>
     <string name="app_name">iData 资产写标工具</string>
 
-    <!-- 参数区（精简，避免小屏截断；详细说明见各输入框默认值与使用说明） -->
+    <!-- 参数区 -->
     <string name="hint_power">写标功率 dBm（5~33，默认15）</string>
     <string name="hint_module">模块类型（0=UM 1=SLR 2=GX）</string>
     <string name="hint_target_bank">信息写入区（3=USER）</string>
     <string name="hint_start_word">起始字地址 Word（默认0）</string>
 
-    <!-- 单张写入（资产编号固定写 EPC 区1；其余写 USER 区，可中文） -->
+    <!-- 页面标题 -->
+    <string name="title_settings">设置</string>
+    <string name="title_rw">读写标签</string>
+    <string name="title_read">读取标签</string>
+    <string name="title_write">写入标签</string>
+    <string name="title_inventory">盘点</string>
+
+    <!-- 单张写入 -->
     <string name="single_section">—— 单张标签写入 ——</string>
     <string name="hint_single_asset">资产编号（写入EPC区1，ASCII）</string>
     <string name="hint_location">存放位置（写入USER区，可中文）</string>
@@ -15,21 +22,35 @@
     <string name="hint_owner">使用人（写入USER区，可中文）</string>
 
     <!-- 按钮 -->
+    <string name="btn_back">返回</string>
     <string name="btn_connect">连接UHF</string>
     <string name="btn_disconnect">断开</string>
-    <string name="btn_detect_single">检测单张标签</string>
+    <string name="btn_detect_single">检测并读取标签</string>
     <string name="btn_write_single">写入这张标签</string>
-    <string name="btn_import">导入Excel/CSV</string>
-    <string name="btn_template">导出Excel模板</string>
-    <string name="btn_add_single">新增（编码自动生成）</string>
+    <string name="btn_import_data">导入数据</string>
+    <string name="btn_template">导出模板</string>
     <string name="btn_start_write">开始批量写标</string>
+    <string name="btn_add">新增资产（编码自动生成）</string>
     <string name="btn_inventory">开始盘点</string>
     <string name="btn_locate">定位标签</string>
     <string name="btn_export">导出结果JSON</string>
     <string name="btn_sync">同步到dws台账</string>
+    <string name="btn_export_read">导出读取数据</string>
+    <string name="btn_save_settings">保存设置</string>
+    <string name="btn_go_write">去写入标签</string>
+
+    <!-- 区块/说明 -->
+    <string name="section_data">数据同步</string>
+    <string name="home_hint">顶部「连接UHF」连上设备后即可操作。\n设置：功率/模块/写入区等参数。\n读写标签：读取或写入单张标签。\n盘点：持续群读并统计。</string>
+    <string name="settings_hint">参数说明：\n• 写标功率：5~33dBm，写单张建议 15 左右，定位可拉高。\n• 模块类型：0=UM 1=SLR 2=GX（一般保持 0）。\n• 信息写入区：默认 USER(3)；资产编号固定写入 EPC 区。\n• 起始字地址：信息在 USER 区的起始 Word，默认 0。\n保存后下次连接自动应用。</string>
+    <string name="rw_hint">读取标签：检测天线范围内唯一标签，读取 TID/EPC/USER 并可导出数据。\n写入标签：填写资产信息后写入，也可导入 Excel/CSV 批量写标。</string>
+    <string name="read_hint">把一张标签靠近天线，点「检测并读取标签」：TID（出厂唯一）、EPC（资产编号）、USER（结构化信息）会一并显示，点「导出读取数据」可保存为 JSON。</string>
+    <string name="write_hint">可写入字段（对应导入模板列）：\n• 资产编号（必填，写 EPC 区）\n• 存放位置 / 使用部门 / 使用人（写 USER 区，可中文）\n点「导出模板」获取 Excel/CSV 模板，填好后「导入数据」→「开始批量写标」。\n也可直接填上方输入框后「写入这张标签」（单张）。</string>
+    <string name="inventory_hint">点「开始盘点」进入持续群读，弹窗实时统计；点击条目可雷达定位。盘点结束后可「保存盘点Excel」。\n「定位标签」需先「检测并读取标签」或选定盘点条目。</string>
 
     <!-- 状态 -->
     <string name="tv_detected">检测到的标签：无</string>
+    <string name="tv_read_data">读取结果：尚未读取</string>
     <string name="tv_single_result">单张写入结果：未操作</string>
     <string name="tv_status">状态：未连接</string>
     <string name="tv_progress">进度：0 / 0</string>

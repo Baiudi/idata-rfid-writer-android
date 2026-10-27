@@ -5,360 +5,64 @@
     android:orientation="vertical"
     android:padding="12dp">
 
-    <!-- 上半部分：可滚动区域（参数/单张写入/批量写标/状态进度） -->
-    <ScrollView
-        android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        android:fillViewport="true"
-        android:scrollbars="none">
-
-        <LinearLayout
-            android:layout_width="match_parent"
-            android:layout_height="wrap_content"
-            android:orientation="vertical">
-
-            <!-- 连接/断开 -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-                <Button
-                    android:id="@+id/btnConnect"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginEnd="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_connect" />
-                <Button
-                    android:id="@+id/btnDisconnect"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginStart="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_disconnect" />
-            </LinearLayout>
-
-            <!-- 设备/参数设置：2×2 网格，标签在上、输入框占满单元格 -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="10dp">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginEnd="6dp"
-                    android:orientation="vertical">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:textSize="12sp"
-                        android:textColor="#666666"
-                        android:text="@string/hint_power" />
-                    <EditText
-                        android:id="@+id/etPower"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:minHeight="44dp"
-                        android:textSize="14sp"
-                        android:inputType="number"
-                        android:text="15" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="6dp"
-                    android:orientation="vertical">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:textSize="12sp"
-                        android:textColor="#666666"
-                        android:text="@string/hint_module" />
-                    <EditText
-                        android:id="@+id/etModule"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:minHeight="44dp"
-                        android:textSize="14sp"
-                        android:inputType="number"
-                        android:text="0" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal">
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginEnd="6dp"
-                    android:orientation="vertical">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:textSize="12sp"
-                        android:textColor="#666666"
-                        android:text="@string/hint_target_bank" />
-                    <EditText
-                        android:id="@+id/etBank"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:minHeight="44dp"
-                        android:textSize="14sp"
-                        android:inputType="number"
-                        android:text="3" />
-                </LinearLayout>
-
-                <LinearLayout
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:layout_marginStart="6dp"
-                    android:orientation="vertical">
-                    <TextView
-                        android:layout_width="wrap_content"
-                        android:layout_height="wrap_content"
-                        android:textSize="12sp"
-                        android:textColor="#666666"
-                        android:text="@string/hint_start_word" />
-                    <EditText
-                        android:id="@+id/etStartWord"
-                        android:layout_width="match_parent"
-                        android:layout_height="wrap_content"
-                        android:minHeight="44dp"
-                        android:textSize="14sp"
-                        android:inputType="number"
-                        android:text="0" />
-                </LinearLayout>
-            </LinearLayout>
-
-            <!-- 单张标签写入 -->
-            <TextView
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="14dp"
-                android:textStyle="bold"
-                android:textSize="14sp"
-                android:text="@string/single_section" />
-
-            <!-- 全宽输入框：hint 完整可见 -->
-            <EditText
-                android:id="@+id/etSingleAsset"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="46dp"
-                android:textSize="14sp"
-                android:inputType="text"
-                android:hint="@string/hint_single_asset" />
-
-            <EditText
-                android:id="@+id/etLocation"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="46dp"
-                android:textSize="14sp"
-                android:inputType="text"
-                android:hint="@string/hint_location" />
-
-            <EditText
-                android:id="@+id/etDept"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="46dp"
-                android:textSize="14sp"
-                android:inputType="text"
-                android:hint="@string/hint_dept" />
-
-            <EditText
-                android:id="@+id/etOwner"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:minHeight="46dp"
-                android:textSize="14sp"
-                android:inputType="text"
-                android:hint="@string/hint_owner" />
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="6dp">
-                <Button
-                    android:id="@+id/btnDetectSingle"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginEnd="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_detect_single" />
-                <Button
-                    android:id="@+id/btnWriteSingle"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginStart="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_write_single" />
-            </LinearLayout>
-
-            <TextView
-                android:id="@+id/tvDetected"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="4dp"
-                android:text="@string/tv_detected"
-                android:textSize="13sp" />
-
-            <TextView
-                android:id="@+id/tvSingleResult"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/tv_single_result"
-                android:textSize="13sp" />
-
-            <!-- 台账导入与批量写标 -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="10dp">
-                <Button
-                    android:id="@+id/btnImport"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginEnd="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_import" />
-                <Button
-                    android:id="@+id/btnTemplate"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginStart="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_template" />
-            </LinearLayout>
-
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="6dp">
-                <Button
-                    android:id="@+id/btnAddSingle"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginEnd="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_add_single" />
-                <Button
-                    android:id="@+id/btnStartWrite"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginStart="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_start_write" />
-            </LinearLayout>
-
-            <!-- 盘点与标签定位 -->
-            <LinearLayout
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:orientation="horizontal"
-                android:layout_marginTop="10dp">
-                <Button
-                    android:id="@+id/btnInventory"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginEnd="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_inventory" />
-                <Button
-                    android:id="@+id/btnLocate"
-                    android:layout_width="0dp"
-                    android:layout_height="wrap_content"
-                    android:layout_weight="1"
-                    android:minHeight="48dp"
-                    android:layout_marginStart="6dp"
-                    android:textSize="15sp"
-                    android:text="@string/btn_locate" />
-            </LinearLayout>
-
-            <!-- 进度与状态 -->
-            <TextView
-                android:id="@+id/tvStatus"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="10dp"
-                android:text="@string/tv_status"
-                android:textSize="14sp" />
-
-            <TextView
-                android:id="@+id/tvProgress"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:text="@string/tv_progress"
-                android:textSize="14sp" />
-
-            <!-- 结果列表：并入同一滚动区域，随页面整体上下滑动 -->
-            <androidx.recyclerview.widget.RecyclerView
-                android:id="@+id/rvResults"
-                android:layout_width="match_parent"
-                android:layout_height="wrap_content"
-                android:layout_marginTop="8dp"
-                android:nestedScrollingEnabled="false"
-                android:minHeight="120dp" />
-
-        </LinearLayout>
-    </ScrollView>
-
-    <!-- 同步到 dws 台账 -->
+    <!-- 顶部栏：返回 / 标题 / 连接 / 断开 -->
     <LinearLayout
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:orientation="horizontal"
-        android:layout_marginTop="6dp">
+        android:orientation="horizontal">
         <Button
-            android:id="@+id/btnExport"
+            android:id="@+id/btnBack"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:visibility="gone"
+            android:text="@string/btn_back"
+            android:textSize="15sp" />
+        <TextView
+            android:id="@+id/tvTitle"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_weight="1"
-            android:minHeight="48dp"
-            android:layout_marginEnd="6dp"
-            android:textSize="15sp"
-            android:text="@string/btn_export" />
+            android:gravity="center"
+            android:text="@string/app_name"
+            android:textSize="18sp"
+            android:textStyle="bold" />
         <Button
-            android:id="@+id/btnSync"
-            android:layout_width="0dp"
+            android:id="@+id/btnConnect"
+            android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:layout_weight="1"
-            android:minHeight="48dp"
-            android:layout_marginStart="6dp"
-            android:textSize="15sp"
-            android:text="@string/btn_sync" />
+            android:minHeight="44dp"
+            android:text="@string/btn_connect"
+            android:textSize="15sp" />
+        <Button
+            android:id="@+id/btnDisconnect"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:minHeight="44dp"
+            android:text="@string/btn_disconnect"
+            android:textSize="15sp" />
     </LinearLayout>
+
+    <!-- 持久状态栏 -->
+    <TextView
+        android:id="@+id/tvStatus"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="6dp"
+        android:text="@string/tv_status"
+        android:textSize="14sp" />
+    <TextView
+        android:id="@+id/tvProgress"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="@string/tv_progress"
+        android:textSize="14sp" />
+
+    <!-- 当前页面内容（由屏幕路由动态切换） -->
+    <FrameLayout
+        android:id="@+id/flContent"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_weight="1"
+        android:layout_marginTop="8dp" />
 </LinearLayout>

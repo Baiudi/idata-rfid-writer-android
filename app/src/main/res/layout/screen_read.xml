@@ -1,0 +1,64 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ScrollView xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:scrollbars="none">
+
+    <LinearLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:orientation="vertical">
+
+        <Button
+            android:id="@+id/btnDetectSingle"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:minHeight="48dp"
+            android:textSize="15sp"
+            android:text="@string/btn_detect_single" />
+
+        <TextView
+            android:id="@+id/tvDetected"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:text="@string/tv_detected"
+            android:textSize="13sp" />
+
+        <TextView
+            android:id="@+id/tvReadData"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="8dp"
+            android:background="#F2F2F2"
+            android:padding="8dp"
+            android:textSize="13sp"
+            android:text="@string/tv_read_data" />
+
+        <Button
+            android:id="@+id/btnExportRead"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:minHeight="48dp"
+            android:textSize="15sp"
+            android:text="@string/btn_export_read" />
+
+        <Button
+            android:id="@+id/btnGoWriteFromRead"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="10dp"
+            android:minHeight="48dp"
+            android:textSize="15sp"
+            android:text="@string/btn_go_write" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="14dp"
+            android:text="@string/read_hint"
+            android:textSize="13sp"
+            android:textColor="#666666" />
+    </LinearLayout>
+</ScrollView>

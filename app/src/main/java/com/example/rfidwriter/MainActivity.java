@@ -16,6 +16,7 @@ import android.view.View;
 import android.view.ViewGroup;
 import android.widget.Button;
 import android.widget.EditText;
+import android.widget.FrameLayout;
 import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
@@ -59,6 +60,15 @@ public class MainActivity extends AppCompatActivity {
     private static final int ASSET_START = 2;              // EPC 区前 2 字为 CRC/PC
     private static final String INFO_MAGIC = "R2";         // USER 区结构化信息前缀（v2：八个自定义字段）
 
+    // 屏幕路由：单一 Activity 内多级页面切换（首页→设置 / 读写标签 / 盘点；读写标签→读取 / 写入）
+    private static final int SCREEN_HOME = 0;
+    private static final int SCREEN_SETTINGS = 1;
+    private static final int SCREEN_RW = 2;
+    private static final int SCREEN_READ = 3;
+    private static final int SCREEN_WRITE = 4;
+    private static final int SCREEN_INVENTORY = 5;
+    private static final String PARAMS = "rfid_params";   // 参数持久化（与当前页面解耦）
+
     private RfidSdk sdk = new IdataUhfAdapter();
     /** 远程/自动化测试钩子：收到该 action 广播即触发「连接 UHF」（等价于手动点“连接UHF”按钮） */
     public static final String ACTION_CONNECT = "com.example.rfidwriter.action.CONNECT";
@@ -72,8 +82,12 @@ public class MainActivity extends AppCompatActivity {
     private ResultAdapter adapter;
 
     private EditText etPower, etModule, etBank, etStartWord, etSingleAsset, etLocation, etDept, etOwner;
-    private TextView tvStatus, tvProgress, tvDetected, tvSingleResult;
-    private Button btnStartWrite, btnSync, btnWriteSingle, btnInventory;
+    private TextView tvStatus, tvProgress, tvDetected, tvSingleResult, tvTitle, tvReadData;
+    private Button btnStartWrite, btnSync, btnWriteSingle, btnInventory, btnBack;
+    private FrameLayout flContent;
+    private int currentScreen = SCREEN_HOME;
+    private android.content.SharedPreferences prefs;
+    private Map<String, String> lastReadInfo;   // 读取标签页：最近一次读取结果（供导出）
     private TagInfo lastDetectedTag;
 
     private volatile boolean writing = false;
@@ -125,57 +139,170 @@ public class MainActivity extends AppCompatActivity {
             requestPermissions(new String[]{android.Manifest.permission.WRITE_EXTERNAL_STORAGE}, 2001);
         }
 
-        etPower = findViewById(R.id.etPower);
-        etModule = findViewById(R.id.etModule);
-        etBank = findViewById(R.id.etBank);
-        etStartWord = findViewById(R.id.etStartWord);
+        // 外壳视图（顶部栏 + 持久状态 + 内容容器）一次性绑定
+        prefs = getSharedPreferences(PARAMS, MODE_PRIVATE);
         tvStatus = findViewById(R.id.tvStatus);
         tvProgress = findViewById(R.id.tvProgress);
-        btnStartWrite = findViewById(R.id.btnStartWrite);
-        btnSync = findViewById(R.id.btnSync);
-        etSingleAsset = findViewById(R.id.etSingleAsset);
-        etLocation = findViewById(R.id.etLocation);
-        etDept = findViewById(R.id.etDept);
-        etOwner = findViewById(R.id.etOwner);
-        tvDetected = findViewById(R.id.tvDetected);
-        tvSingleResult = findViewById(R.id.tvSingleResult);
-        btnWriteSingle = findViewById(R.id.btnWriteSingle);
-
-        RecyclerView rv = findViewById(R.id.rvResults);
-        rv.setLayoutManager(new LinearLayoutManager(this));
-        adapter = new ResultAdapter(ledger);
-        rv.setAdapter(adapter);
-
+        tvTitle = findViewById(R.id.tvTitle);
+        btnBack = findViewById(R.id.btnBack);
+        flContent = findViewById(R.id.flContent);
         findViewById(R.id.btnConnect).setOnClickListener(v -> connect());
         findViewById(R.id.btnDisconnect).setOnClickListener(v -> {
             sdk.release();
             setStatus("已断开");
         });
-        findViewById(R.id.btnImport).setOnClickListener(v -> pickLedger());
-        findViewById(R.id.btnTemplate).setOnClickListener(v -> exportTemplate());
-        findViewById(R.id.btnAddSingle).setOnClickListener(v -> showAddDialog());
-        btnStartWrite.setOnClickListener(v -> startBatchWrite());
-        findViewById(R.id.btnExport).setOnClickListener(v -> exportJson());
-        btnSync.setOnClickListener(v -> syncToDws());
-        findViewById(R.id.btnDetectSingle).setOnClickListener(v -> detectSingle());
-        btnWriteSingle.setOnClickListener(v -> writeSingle());
-        btnInventory = findViewById(R.id.btnInventory);
-        btnInventory.setOnClickListener(v -> toggleInventory());
-        findViewById(R.id.btnLocate).setOnClickListener(v -> {
-            if (lastDetectedTag != null && !nz(lastDetectedTag.epc).isEmpty()) {
-                locateTag(lastDetectedTag.epc);
-            } else {
-                Toast.makeText(this, "请先「检测单张标签」或从盘点结果中点击要定位的标签", Toast.LENGTH_LONG).show();
-            }
+        btnBack.setOnClickListener(v -> {
+            int p = parentOf(currentScreen);
+            if (p >= 0) showScreen(p);
         });
+
+        // 进入首页（其它页面通过顶部“返回”或页面内按钮进入）
+        showScreen(SCREEN_HOME);
 
         // 恢复上次未完成的记录
         ledger.addAll(db.getAll());
-        adapter.notifyDataSetChanged();
         refreshProgress();
 
         // 若上次崩溃已记录，弹窗展示堆栈（截图发我即可定位）
         maybeShowLastCrash();
+    }
+
+    // ----------------- 屏幕路由（首页→设置 / 读写标签 / 盘点；读写标签→读取 / 写入） -----------------
+
+    /** 进入指定屏幕：把对应布局 inflate 进 flContent，并绑定该页控件与按钮 */
+    private void showScreen(int screen) {
+        currentScreen = screen;
+        int layout;
+        switch (screen) {
+            case SCREEN_SETTINGS:   layout = R.layout.screen_settings;   break;
+            case SCREEN_RW:         layout = R.layout.screen_rw;         break;
+            case SCREEN_READ:       layout = R.layout.screen_read;       break;
+            case SCREEN_WRITE:      layout = R.layout.screen_write;      break;
+            case SCREEN_INVENTORY:  layout = R.layout.screen_inventory;  break;
+            default:                layout = R.layout.screen_home;        break;
+        }
+        flContent.removeAllViews();
+        View root = LayoutInflater.from(this).inflate(layout, flContent, false);
+        flContent.addView(root);
+
+        btnBack.setVisibility(screen == SCREEN_HOME ? View.GONE : View.VISIBLE);
+        if (tvTitle != null) tvTitle.setText(screenTitle(screen));
+
+        switch (screen) {
+            case SCREEN_HOME:      bindHome(root);      break;
+            case SCREEN_SETTINGS:   bindSettings(root);  break;
+            case SCREEN_RW:         bindRw(root);        break;
+            case SCREEN_READ:       bindRead(root);      break;
+            case SCREEN_WRITE:      bindWrite(root);     break;
+            case SCREEN_INVENTORY:  bindInventory(root); break;
+        }
+    }
+
+    private int parentOf(int screen) {
+        switch (screen) {
+            case SCREEN_SETTINGS:
+            case SCREEN_RW:
+            case SCREEN_INVENTORY:  return SCREEN_HOME;
+            case SCREEN_READ:
+            case SCREEN_WRITE:      return SCREEN_RW;
+            default:                return -1;
+        }
+    }
+
+    private String screenTitle(int screen) {
+        switch (screen) {
+            case SCREEN_SETTINGS:   return getString(R.string.title_settings);
+            case SCREEN_RW:         return getString(R.string.title_rw);
+            case SCREEN_READ:       return getString(R.string.title_read);
+            case SCREEN_WRITE:      return getString(R.string.title_write);
+            case SCREEN_INVENTORY:  return getString(R.string.title_inventory);
+            default:                return getString(R.string.app_name);
+        }
+    }
+
+    /** 各页控件按当前布局重新绑定（控件只在对应页面存在，按需 setOnClickListener） */
+    private void bindHome(View r) {
+        r.findViewById(R.id.btnSettings).setOnClickListener(v -> showScreen(SCREEN_SETTINGS));
+        r.findViewById(R.id.btnRw).setOnClickListener(v -> showScreen(SCREEN_RW));
+        r.findViewById(R.id.btnInventoryHome).setOnClickListener(v -> showScreen(SCREEN_INVENTORY));
+        r.findViewById(R.id.btnExport).setOnClickListener(v -> exportJson());
+        r.findViewById(R.id.btnSync).setOnClickListener(v -> syncToDws());
+    }
+
+    private void bindSettings(View r) {
+        etPower = r.findViewById(R.id.etPower);
+        etModule = r.findViewById(R.id.etModule);
+        etBank = r.findViewById(R.id.etBank);
+        etStartWord = r.findViewById(R.id.etStartWord);
+        // 从持久化参数回填输入框
+        etPower.setText(String.valueOf(getParam("power", 15)));
+        etModule.setText(String.valueOf(getParam("module", 0)));
+        etBank.setText(String.valueOf(getParam("bank", 3)));
+        etStartWord.setText(String.valueOf(getParam("startWord", 0)));
+        r.findViewById(R.id.btnSaveSettings).setOnClickListener(v -> saveParams());
+    }
+
+    private void bindRw(View r) {
+        r.findViewById(R.id.btnGoRead).setOnClickListener(v -> showScreen(SCREEN_READ));
+        r.findViewById(R.id.btnGoWrite).setOnClickListener(v -> showScreen(SCREEN_WRITE));
+    }
+
+    private void bindRead(View r) {
+        tvDetected = r.findViewById(R.id.tvDetected);
+        tvReadData = r.findViewById(R.id.tvReadData);
+        r.findViewById(R.id.btnDetectSingle).setOnClickListener(v -> readFullTag());
+        r.findViewById(R.id.btnExportRead).setOnClickListener(v -> exportRead());
+        r.findViewById(R.id.btnGoWriteFromRead).setOnClickListener(v -> showScreen(SCREEN_WRITE));
+    }
+
+    private void bindWrite(View r) {
+        etSingleAsset = r.findViewById(R.id.etSingleAsset);
+        etLocation = r.findViewById(R.id.etLocation);
+        etDept = r.findViewById(R.id.etDept);
+        etOwner = r.findViewById(R.id.etOwner);
+        tvSingleResult = r.findViewById(R.id.tvSingleResult);
+        btnWriteSingle = r.findViewById(R.id.btnWriteSingle);
+        btnStartWrite = r.findViewById(R.id.btnStartWrite);
+        r.findViewById(R.id.btnImportData).setOnClickListener(v -> pickLedger());
+        r.findViewById(R.id.btnTemplate).setOnClickListener(v -> exportTemplate());
+        btnWriteSingle.setOnClickListener(v -> writeSingle());
+        btnStartWrite.setOnClickListener(v -> startBatchWrite());
+        r.findViewById(R.id.btnAdd).setOnClickListener(v -> showAddDialog());
+    }
+
+    private void bindInventory(View r) {
+        btnInventory = r.findViewById(R.id.btnInventory);
+        btnInventory.setOnClickListener(v -> toggleInventory());
+        r.findViewById(R.id.btnLocate).setOnClickListener(v -> {
+            if (lastDetectedTag != null && !nz(lastDetectedTag.epc).isEmpty()) {
+                locateTag(lastDetectedTag.epc);
+            } else {
+                Toast.makeText(this, "请先到「读写标签→读取标签」检测一张标签，或从盘点结果中点击要定位的标签", Toast.LENGTH_LONG).show();
+            }
+        });
+        RecyclerView rv = r.findViewById(R.id.rvResults);
+        rv.setLayoutManager(new LinearLayoutManager(this));
+        adapter = new ResultAdapter(ledger);
+        rv.setAdapter(adapter);
+        notifyList();
+        updateInventoryButton();
+    }
+
+    // ----------------- 参数持久化（与当前显示页面解耦，连接/写/读均从这里取） -----------------
+
+    private int getParam(String name, int def) {
+        return prefs.getInt(name, def);
+    }
+
+    /** 保存设置页参数为持久化值（下次连接自动应用） */
+    private void saveParams() {
+        prefs.edit()
+                .putInt("power", parseInt(etPower, 15))
+                .putInt("module", parseInt(etModule, 0))
+                .putInt("bank", parseInt(etBank, 3))
+                .putInt("startWord", parseInt(etStartWord, 0))
+                .apply();
+        Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show();
     }
 
     // ----------------- 崩溃自诊断（远程排查用） -----------------
@@ -244,11 +371,11 @@ public class MainActivity extends AppCompatActivity {
     // ----------------- 连接 / 参数 -----------------
 
     private void connect() {
-        int module = parseInt(etModule, 0);
+        int module = getParam("module", 0);
         sdk.init(module, (ok, msg) -> runOnUiThread(() -> {
             setStatus(msg);
             if (ok) {
-                sdk.setPower(parseInt(etPower, 15));
+                sdk.setPower(getParam("power", 15));
                 sdk.setInventoryMode(0);
             }
         }));
@@ -271,7 +398,7 @@ public class MainActivity extends AppCompatActivity {
     /** 只读测试主体：检测天线范围内唯一标签，读 TID/EPC/USER 三区并打 hex + 解析日志；无唯一标签则快速盘点诊断 */
     private void doReadTest() {
         if (!sdk.isConnected()) { Log.w(TAG, "READ_TEST: 仍未连接 UHF，跳过"); return; }
-        sdk.setPower(parseInt(etPower, 15));
+        sdk.setPower(getParam("power", 15));
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             if (tag == null) {
@@ -304,7 +431,7 @@ public class MainActivity extends AppCompatActivity {
     /** 写测试主体：检测唯一标签，按 TID/EPC 构造过滤条件，往 USER 区写测试串后回读校验 */
     private void doWriteTest() {
         if (!sdk.isConnected()) { Log.w(TAG, "WRITE_TEST: 仍未连接 UHF，跳过"); return; }
-        sdk.setPower(parseInt(etPower, 15)); // 写单张前调低功率，避免误写邻近标签
+        sdk.setPower(getParam("power", 15)); // 写单张前调低功率，避免误写邻近标签
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             if (tag == null) {
@@ -338,6 +465,14 @@ public class MainActivity extends AppCompatActivity {
             mTestReceiver = null;
         }
         super.onDestroy();
+    }
+
+    /** 物理返回键：逐级返回（首页再按一次退出） */
+    @Override
+    public void onBackPressed() {
+        int p = parentOf(currentScreen);
+        if (p >= 0) showScreen(p);
+        else super.onBackPressed();
     }
 
     // ----------------- 导入台账（Excel/CSV）与模板 -----------------
@@ -435,10 +570,12 @@ public class MainActivity extends AppCompatActivity {
             ledger.add(w);
             db.upsert(w);
         }
-        adapter.notifyDataSetChanged();
+        notifyList();
         refreshProgress();
         Toast.makeText(this, "导入 " + parsed.size() + " 条台账（编码为空的已自动生成）", Toast.LENGTH_SHORT).show();
     }
+
+    private void notifyList() { if (adapter != null) adapter.notifyDataSetChanged(); }
 
     /** 自动生成资产编码：yyyyMMddHHmmss + 3 位随机，查重后返回 */
     private String genAssetNo() {
@@ -458,13 +595,13 @@ public class MainActivity extends AppCompatActivity {
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
         if (ledger.isEmpty()) { Toast.makeText(this, "请先导入台账", Toast.LENGTH_SHORT).show(); return; }
 
-        int power = parseInt(etPower, 15);
-        int infoBank = parseInt(etBank, 3);      // 信息写入区：默认 USER(3)
-        int infoStart = parseInt(etStartWord, 0); // 信息起始字地址：默认 0
+        int power = getParam("power", 15);
+        int infoBank = getParam("bank", 3);      // 信息写入区：默认 USER(3)
+        int infoStart = getParam("startWord", 0); // 信息起始字地址：默认 0
         sdk.setPower(power); // 写单张前调低功率，避免误写邻近标签
 
         writing = true;
-        btnStartWrite.setEnabled(false);
+        if (btnStartWrite != null) btnStartWrite.setEnabled(false);
         new Thread(() -> runBatchWrite(infoBank, infoStart)).start();
     }
 
@@ -500,7 +637,7 @@ public class MainActivity extends AppCompatActivity {
 
         writing = false;
         runOnUiThread(() -> {
-            btnStartWrite.setEnabled(true);
+            if (btnStartWrite != null) btnStartWrite.setEnabled(true);
             int succ = db.countByStatus("success");
             setStatus("批量写标完成：成功 " + succ + " / " + total + "（失败项可重新点“开始批量写标”补写）");
         });
@@ -588,7 +725,7 @@ public class MainActivity extends AppCompatActivity {
     /** 检测天线范围内【唯一】一张标签，并在界面显示其 TID/EPC（不写入） */
     private void detectSingle() {
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
-        sdk.setPower(parseInt(etPower, 15));
+        sdk.setPower(getParam("power", 15));
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             lastDetectedTag = tag;
@@ -603,17 +740,73 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
+    /**
+     * 读取标签页：检测天线范围内【唯一】一张标签，并读取 TID/EPC/USER 三区，
+     * 在界面展示解析结果，同时缓存到 lastReadInfo 供「导出读取数据」使用。
+     */
+    private void readFullTag() {
+        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+        sdk.setPower(getParam("power", 15));
+        new Thread(() -> {
+            TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+            lastDetectedTag = tag;
+            if (tag == null) {
+                runOnUiThread(() -> {
+                    if (tvDetected != null) tvDetected.setText("检测到的标签：无（请确保天线范围内仅一张标签）");
+                });
+                return;
+            }
+            String tid = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
+            String epc = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS);
+            String user = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS);
+            String userUtf8 = user != null ? FormatUtil.hexToUtf8(user) : "";
+            lastReadInfo = new java.util.HashMap<>();
+            lastReadInfo.put("epc", nz(tag.epc));
+            lastReadInfo.put("tid", nz(tid));
+            lastReadInfo.put("userHex", nz(user));
+            lastReadInfo.put("userUtf8", nz(userUtf8));
+            lastReadInfo.put("readAt", nowIso());
+            String disp = "EPC  : " + nz(tag.epc)
+                    + "\nTID  : " + nz(tid)
+                    + "\nUSER : " + nz(user)
+                    + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8);
+            runOnUiThread(() -> {
+                if (tvDetected != null)
+                    tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
+                            + (nz(tid).isEmpty() ? "" : "  TID=" + tid));
+                if (tvReadData != null) tvReadData.setText(disp);
+            });
+        }).start();
+    }
+
+    /** 导出最近一次读取结果（TID/EPC/USER）为 JSON 文件 */
+    private void exportRead() {
+        if (lastReadInfo == null) {
+            Toast.makeText(this, "请先「检测并读取标签」", Toast.LENGTH_SHORT).show();
+            return;
+        }
+        try {
+            org.json.JSONObject o = new org.json.JSONObject(lastReadInfo);
+            byte[] data = o.toString(2).getBytes(StandardCharsets.UTF_8);
+            String name = "rfid-read-" + new SimpleDateFormat("yyyyMMddHHmmss", Locale.CHINA).format(new Date()) + ".json";
+            String where = saveToDownloads(name, data);
+            Toast.makeText(this, where != null ? ("已导出:\n" + where) : ("已导出:\n" + name), Toast.LENGTH_LONG).show();
+        } catch (Exception e) {
+            Toast.makeText(this, "导出失败:" + e.getMessage(), Toast.LENGTH_LONG).show();
+        }
+    }
+
     /** 单张写标共享流程：检测唯一标签 -> EPC 写编码 -> USER 写全部信息 -> 落库刷新 */
     private void writeOneInBackground(WriteResult wr) {
         if (writing) return;
         writing = true;
-        btnWriteSingle.setEnabled(false);
+        if (btnWriteSingle != null) btnWriteSingle.setEnabled(false);
         new Thread(() -> {
             String resultMsg;
             try {
-                int infoBank = parseInt(etBank, 3);
-                int infoStart = parseInt(etStartWord, 0);
-                sdk.setPower(parseInt(etPower, 15)); // 写单张前调低功率，避免误写邻近标签
+            int infoBank = getParam("bank", 3);
+            int infoStart = getParam("startWord", 0);
+            sdk.setPower(getParam("power", 15)); // 写单张前调低功率，避免误写邻近标签
 
                 TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
                 if (tag == null) {
@@ -638,10 +831,10 @@ public class MainActivity extends AppCompatActivity {
             final String msg = resultMsg;
             writing = false;
             runOnUiThread(() -> {
-                btnWriteSingle.setEnabled(true);
-                adapter.notifyDataSetChanged();
+                if (btnWriteSingle != null) btnWriteSingle.setEnabled(true);
+                notifyList();
                 refreshProgress();
-                tvSingleResult.setText("单张写入结果：" + msg);
+                if (tvSingleResult != null) tvSingleResult.setText("单张写入结果：" + msg);
                 Toast.makeText(this, msg, Toast.LENGTH_LONG).show();
             });
         }).start();
@@ -878,7 +1071,7 @@ public class MainActivity extends AppCompatActivity {
 
         locating = true;
         sdk.setInventoryMode(0);
-        final float txPower = parseInt(etPower, 30); // 定位用高功率，读得远
+        final float txPower = getParam("power", 30); // 定位用高功率，读得远
         sdk.setPower((int) txPower);
 
         float density = getResources().getDisplayMetrics().density;
@@ -1033,7 +1226,7 @@ public class MainActivity extends AppCompatActivity {
                         // 未连接：先保存为待写记录，连接后批量写
                         ledger.add(wr);
                         db.upsert(wr);
-                        adapter.notifyDataSetChanged();
+                        notifyList();
                         refreshProgress();
                         Toast.makeText(this, "已保存（编码 " + wr.assetNo
                                 + "），未连接 UHF；连接后可点「开始批量写标」写入", Toast.LENGTH_LONG).show();
@@ -1107,7 +1300,7 @@ public class MainActivity extends AppCompatActivity {
     private void persistAndRefresh(WriteResult item, int cur, int tot) {
         db.upsert(item);
         runOnUiThread(() -> {
-            adapter.notifyDataSetChanged();
+            notifyList();
             refreshProgress();
         });
     }
