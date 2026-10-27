@@ -11,6 +11,7 @@ import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.View;
 import android.view.ViewGroup;
@@ -42,7 +43,10 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Arrays;
+import java.util.HashSet;
 import java.util.Map;
+import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.TimeUnit;
@@ -94,7 +98,18 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean inventorying = false;
     private volatile boolean invPaused = false;
     private volatile boolean locating = false;
+    private volatile boolean reading = false;       // 读取中（防止手柄连按并发读取）
     private boolean locateFromInventory = false;   // 本次定位是否由盘点弹窗发起（关闭后自动回盘点）
+
+    // ----------------- 手柄按键（设备扳机/扫描键）映射 -----------------
+    // 第一次在读取/盘点页按下候选键之一时，自动记住该 keyCode 作为“手柄触发键”（持久化），
+    // 之后按该键即触发对应操作。候选范围覆盖 iData T1U 常见映射（F1~F4 / 手柄 L1 R1 A B / 相机键）。
+    private static final Set<Integer> HANDLE_CANDIDATES = new HashSet<>(Arrays.asList(
+            KeyEvent.KEYCODE_F1, KeyEvent.KEYCODE_F2, KeyEvent.KEYCODE_F3, KeyEvent.KEYCODE_F4,
+            KeyEvent.KEYCODE_BUTTON_L1, KeyEvent.KEYCODE_BUTTON_R1,
+            KeyEvent.KEYCODE_BUTTON_A, KeyEvent.KEYCODE_BUTTON_B,
+            KeyEvent.KEYCODE_CAMERA));
+    private int mHandleKey = 0;   // 0 表示尚未学习到；从偏好读取
 
     // 盘点统计：epc -> [次数, 最大RSSI(dBm)]
     private final Map<String, int[]> invStats = new ConcurrentHashMap<>();
@@ -141,6 +156,7 @@ public class MainActivity extends AppCompatActivity {
 
         // 外壳视图（顶部栏 + 持久状态 + 内容容器）一次性绑定
         prefs = getSharedPreferences(PARAMS, MODE_PRIVATE);
+        mHandleKey = prefs.getInt("handleKey", 0);   // 恢复已学习的手柄触发键
         tvStatus = findViewById(R.id.tvStatus);
         tvProgress = findViewById(R.id.tvProgress);
         tvTitle = findViewById(R.id.tvTitle);
@@ -475,6 +491,51 @@ public class MainActivity extends AppCompatActivity {
         else super.onBackPressed();
     }
 
+    /**
+     * 设备手柄按键（扳机/扫描键）路由：
+     *  - 仅在「读取标签」页：按一下 = 读取一次单张标签；
+     *  - 仅在「盘点」页：按一下 = 开始读取；再按 = 暂停；再按 = 继续（start/pause 切换）；
+     *  - 首次在这两个页面按下候选键之一时，自动记住该 keyCode 作为手柄触发键（持久化），
+     *    之后只认该键，避免误触其它按键。未知键会在 logcat 打印 keyCode 便于排查。
+     */
+    @Override
+    public boolean dispatchKeyEvent(KeyEvent e) {
+        if (e.getAction() == KeyEvent.ACTION_DOWN) {
+            int code = e.getKeyCode();
+            if (currentScreen == SCREEN_READ || currentScreen == SCREEN_INVENTORY) {
+                Log.i(TAG, "KEY keyCode=" + code + " screen=" + currentScreen);
+                // 尚未学习到手柄键：若是候选键之一，则记住它
+                if (mHandleKey == 0 && HANDLE_CANDIDATES.contains(code)) {
+                    mHandleKey = code;
+                    prefs.edit().putInt("handleKey", code).apply();
+                    Log.i(TAG, "HANDLE_KEY learned=" + code);
+                    Toast.makeText(this, "已记住手柄按键（keyCode=" + code + "）", Toast.LENGTH_SHORT).show();
+                }
+                if (code == mHandleKey) {
+                    if (currentScreen == SCREEN_READ) {
+                        readFullTag();
+                    } else {
+                        toggleInventoryFromHandle();
+                    }
+                    return true;   // 消费，避免系统重复处理（如 F1 默认行为）
+                }
+            }
+        }
+        return super.dispatchKeyEvent(e);
+    }
+
+    /** 盘点页手柄键逻辑：未开始→开始；进行中→暂停/继续切换 */
+    private void toggleInventoryFromHandle() {
+        if (locating) { Toast.makeText(this, "定位进行中，请先停止定位", Toast.LENGTH_SHORT).show(); return; }
+        if (!inventorying) {
+            startInventorySession();
+        } else if (invPaused) {
+            resumeInventory();
+        } else {
+            pauseInventory();
+        }
+    }
+
     // ----------------- 导入台账（Excel/CSV）与模板 -----------------
 
     private void pickLedger() {
@@ -704,6 +765,7 @@ public class MainActivity extends AppCompatActivity {
     private TagInfo detectSingleTag(long windowMs) {
         Map<String, Integer> seen = new ConcurrentHashMap<>();
         CountDownLatch latch = new CountDownLatch(1);
+        sdk.setInventoryMode(1);   // 确保开启连续盘点模式（否则 startInventoryTag 不回传标签）
         sdk.startInventory(new RfidSdk.InventoryCallback() {
             @Override public void onTag(TagInfo t) {
                 if (t.epc != null && !t.epc.isEmpty()) seen.merge(t.epc, 1, Integer::sum);
@@ -745,37 +807,47 @@ public class MainActivity extends AppCompatActivity {
      * 在界面展示解析结果，同时缓存到 lastReadInfo 供「导出读取数据」使用。
      */
     private void readFullTag() {
+        if (reading) return;                       // 防止手柄连按并发读取
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+        reading = true;
+        setStatus("正在读取标签…");
         sdk.setPower(getParam("power", 15));
         new Thread(() -> {
-            TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
-            lastDetectedTag = tag;
-            if (tag == null) {
+            try {
+                TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+                lastDetectedTag = tag;
+                if (tag == null) {
+                    runOnUiThread(() -> {
+                        if (tvDetected != null)
+                            tvDetected.setText("检测到的标签：无（请确保天线范围内仅一张标签，并已点「连接UHF」）");
+                        setStatus("读取完成：未检测到标签");
+                    });
+                    return;
+                }
+                String tid = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
+                String epc = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS);
+                String user = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS);
+                String userUtf8 = user != null ? FormatUtil.hexToUtf8(user) : "";
+                lastReadInfo = new java.util.HashMap<>();
+                lastReadInfo.put("epc", nz(tag.epc));
+                lastReadInfo.put("tid", nz(tid));
+                lastReadInfo.put("userHex", nz(user));
+                lastReadInfo.put("userUtf8", nz(userUtf8));
+                lastReadInfo.put("readAt", nowIso());
+                String disp = "EPC  : " + nz(tag.epc)
+                        + "\nTID  : " + nz(tid)
+                        + "\nUSER : " + nz(user)
+                        + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8);
                 runOnUiThread(() -> {
-                    if (tvDetected != null) tvDetected.setText("检测到的标签：无（请确保天线范围内仅一张标签）");
+                    if (tvDetected != null)
+                        tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
+                                + (nz(tid).isEmpty() ? "" : "  TID=" + tid));
+                    if (tvReadData != null) tvReadData.setText(disp);
+                    setStatus("读取完成（TID/EPC/USER 已读，可点「导出读取数据」）");
                 });
-                return;
+            } finally {
+                reading = false;
             }
-            String tid = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
-            String epc = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS);
-            String user = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS);
-            String userUtf8 = user != null ? FormatUtil.hexToUtf8(user) : "";
-            lastReadInfo = new java.util.HashMap<>();
-            lastReadInfo.put("epc", nz(tag.epc));
-            lastReadInfo.put("tid", nz(tid));
-            lastReadInfo.put("userHex", nz(user));
-            lastReadInfo.put("userUtf8", nz(userUtf8));
-            lastReadInfo.put("readAt", nowIso());
-            String disp = "EPC  : " + nz(tag.epc)
-                    + "\nTID  : " + nz(tid)
-                    + "\nUSER : " + nz(user)
-                    + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8);
-            runOnUiThread(() -> {
-                if (tvDetected != null)
-                    tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
-                            + (nz(tid).isEmpty() ? "" : "  TID=" + tid));
-                if (tvReadData != null) tvReadData.setText(disp);
-            });
         }).start();
     }
 

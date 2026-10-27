@@ -216,7 +216,13 @@ public class IdataUhfAdapter implements RfidSdk {
     public void setInventoryMode(int mode) {
         if (!mConnected.get() || mUhf == null) return;
         try {
-            mUhfClass.getMethod("inventoryModeSet", int.class, boolean.class).invoke(mUhf, mode, false);
+            // iData UHFManager.inventoryModeSet(int mode, boolean flag)：
+            // flag=true 才真正开启盘点模式（连续盘点才会回传标签）；
+            // 之前一直传 false 导致 mode=1 也被当成“关闭”，于是 startInventoryTag 不再流标签，
+            // 单张检测始终超时返回 null（“读取无反应”的根因）。这里把 flag 与 mode 绑定：mode≠0 即开启。
+            mUhfClass.getMethod("inventoryModeSet", int.class, boolean.class)
+                    .invoke(mUhf, mode, mode != 0);
+            Log.i(TAG, "setInventoryMode: mode=" + mode + " flag=" + (mode != 0));
         } catch (Throwable ignore) { /* best effort */ }
     }
 
