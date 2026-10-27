@@ -388,13 +388,28 @@ public class MainActivity extends AppCompatActivity {
 
     private void connect() {
         int module = getParam("module", 0);
-        sdk.init(module, (ok, msg) -> runOnUiThread(() -> {
-            setStatus(msg);
-            if (ok) {
-                sdk.setPower(getParam("power", 15));
-                sdk.setInventoryMode(0);
+        sdk.init(module, (ok, msg) -> {
+            if (!ok) {
+                // UHF 模块偶发首连失败（多为上一次未干净释放），自动重试一次，避免用户看到假失败
+                Log.i(TAG, "connect: 首连 powerOn=false，800ms 后自动重试一次");
+                runOnUiThread(() -> setStatus(msg + "（自动重试中…）"));
+                uiHandler.postDelayed(() -> sdk.init(module, (ok2, msg2) -> runOnUiThread(() -> {
+                    setStatus(msg2);
+                    if (ok2) {
+                        sdk.setPower(getParam("power", 15));
+                        sdk.setInventoryMode(0);
+                    }
+                })), 800);
+                return;
             }
-        }));
+            runOnUiThread(() -> {
+                setStatus(msg);
+                if (ok) {
+                    sdk.setPower(getParam("power", 15));
+                    sdk.setInventoryMode(0);
+                }
+            });
+        });
     }
 
     // ----------------- 远程读写测试钩子（自动化验证用） -----------------
