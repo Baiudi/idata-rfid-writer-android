@@ -580,7 +580,7 @@ public class MainActivity extends AppCompatActivity {
                     1, 2, epcTest, PWD, WRITE_TIMEOUT_MS);
             Log.i(TAG, "WRITE_TEST(控制): EPC区写入 ok=" + epcOk + " 测试串=" + epcTest);
             if (epcOk) {
-                int ew = (epcTest.getBytes(StandardCharsets.UTF_8).length() + 1) / 2;
+                int ew = (epcTest.getBytes(StandardCharsets.UTF_8).length + 1) / 2;
                 String eHex = sdk.readTagSync(1, 2, ew, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
                 Log.i(TAG, "WRITE_TEST(控制): EPC回读 hex=" + eHex);
             }
