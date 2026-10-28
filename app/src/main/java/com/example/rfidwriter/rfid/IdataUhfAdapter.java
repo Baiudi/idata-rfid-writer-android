@@ -221,37 +221,45 @@ public class IdataUhfAdapter implements RfidSdk {
         }
     }
 
+    /** 从原始串中提取 EPC：取最长的 hex 连续段（≥8位），对前后缀不可见字符/杂质免疫 */
+    private static final java.util.regex.Pattern HEX_RUN =
+            java.util.regex.Pattern.compile("[0-9A-Fa-f]{8,}");
+
+    private static String extractEpc(String s) {
+        if (s == null) return null;
+        java.util.regex.Matcher m = HEX_RUN.matcher(s);
+        String best = null;
+        while (m.find()) {
+            String c = m.group();
+            if (best == null || c.length() > best.length()) best = c;
+        }
+        return (best != null && best.length() >= 8 && (best.length() % 2) == 0)
+                ? best.toUpperCase(java.util.Locale.US) : null;
+    }
+
     /**
      * 解析单条标签信息串。iData UHF 回调/缓存通常返回 EPC 的 hex 串；
      * 部分模式下会用 '|' / ',' / '#' / 空白 追加 TID/RSSI。
-     * 只把【偶长度、纯 0-9A-F 的 hex 串】认作 EPC，纯数字串认作 RSSI，其余忽略。
+     * EPC = 串中最长 hex 连续段；RSSI = EPC 之后的纯数字段（避免把 EPC 自身当数字）。
      */
     private TagInfo parseTag(String raw) {
         TagInfo t = new TagInfo();
         if (raw == null) return t;
         String s = raw.trim();
         if (s.isEmpty()) return t;
-        String[] parts = s.split("[|,#\\s]+");
-        for (String p : parts) {
-            p = p.trim();
-            if (p.isEmpty()) continue;
-            if (t.epc == null && isHexEpc(p)) {
-                t.epc = p;
-            } else if (t.rssi == null && p.matches("-?\\d+(\\.\\d+)?")) {
-                t.rssi = p;
-            }
+        java.util.regex.Matcher m = HEX_RUN.matcher(s);
+        String best = null; int bestEnd = -1;
+        while (m.find()) {
+            String c = m.group();
+            if (best == null || c.length() > best.length()) { best = c; bestEnd = m.end(); }
+        }
+        if (best != null && best.length() >= 8 && (best.length() % 2) == 0) {
+            t.epc = best.toUpperCase(java.util.Locale.US);
+            String rest = s.substring(Math.max(bestEnd, 0));
+            java.util.regex.Matcher rm = java.util.regex.Pattern.compile("-?\\d+(\\.\\d+)?").matcher(rest);
+            if (rm.find()) t.rssi = rm.group();
         }
         return t;
-    }
-
-    /** 判断是否为合法 EPC hex：偶长度、仅 0-9A-Fa-f、至少 4 字符（2 字节） */
-    private static boolean isHexEpc(String p) {
-        if (p.length() < 4 || (p.length() % 2) != 0) return false;
-        for (int i = 0; i < p.length(); i++) {
-            char c = p.charAt(i);
-            if (!((c >= '0' && c <= '9') || (c >= 'A' && c <= 'F') || (c >= 'a' && c <= 'f'))) return false;
-        }
-        return true;
     }
 
     /**
@@ -384,28 +392,44 @@ public class IdataUhfAdapter implements RfidSdk {
             while (mPolling.get()) {
                 try {
                     String[] arr = pollBuffer();
-                    Set<String> cur = new HashSet<>();
-                    for (String raw : arr) {
-                        if (raw == null || raw.isEmpty()) continue;
-                        TagInfo t = parseTag(raw);
-                        if (t.epc != null && !t.epc.isEmpty()) cur.add(t.epc);
+                    // 原始缓存为 [空, EPC, RSSI, 空, EPC, RSSI, ...] 三元组；EPC 元素取最长 hex 段，
+                    // 紧随其后的纯数字元素作为 RSSI 配对
+                    java.util.LinkedHashMap<String, String> cur = new java.util.LinkedHashMap<>();
+                    int parsedFail = 0;
+                    for (int i = 0; i < arr.length; i++) {
+                        String raw = arr[i];
+                        if (raw == null) continue;
+                        String s = raw.trim();
+                        if (s.isEmpty()) continue;
+                        String epc = extractEpc(s);
+                        if (epc == null) { parsedFail++; continue; }
+                        if (!cur.containsKey(epc)) {
+                            String rssi = null;
+                            if (i + 1 < arr.length && arr[i + 1] != null) {
+                                String nxt = arr[i + 1].trim();
+                                if (nxt.matches("-?\\d+(\\.\\d+)?")) { rssi = nxt; i++; }
+                            }
+                            cur.put(epc, rssi);
+                        }
                     }
                     // 每 ~2s 清空一次去重集，使“再次读到同一标签”也能被重新计数
                     int forwarded = 0;
                     synchronized (mPollSeen) {
                         if ((++mPollCount % 14) == 0) mPollSeen.clear();
-                        for (String epc : cur) {
-                            if (!mPollSeen.contains(epc)) {
-                                mPollSeen.add(epc);
+                        for (java.util.Map.Entry<String, String> e : cur.entrySet()) {
+                            if (!mPollSeen.contains(e.getKey())) {
+                                mPollSeen.add(e.getKey());
                                 forwarded++;
                                 final TagInfo ft = new TagInfo();
-                                ft.epc = epc;
+                                ft.epc = e.getKey();
+                                ft.rssi = e.getValue() == null ? "" : e.getValue();
                                 if (mInvCb != null) mMain.post(() -> mInvCb.onTag(ft));
                             }
                         }
                     }
-                    if (!cur.isEmpty()) {
-                        Log.i(TAG, "轮询解析: 本轮EPC=" + cur.size()
+                    if (arr.length > 0) {
+                        Log.i(TAG, "轮询解析: arrLen=" + arr.length + " 解析出EPC=" + cur.size()
+                                + " 解析失败元素=" + parsedFail
                                 + " 新转发=" + forwarded
                                 + " mInvCb=" + (mInvCb != null));
                     }
