@@ -268,15 +268,50 @@ public class IdataUhfAdapter implements RfidSdk {
      * 因为这里定位的是 UHFInterface 上已编译好的方法（readTag/readTagFromBuffer/startInventoryTag/
      * WriteTagDataAndReadTagData/inventoryModeSet/powerOn …），它们内部已正确落到活实例。
      */
+    private static Class<?> box(Class<?> c) {
+        if (c == int.class) return Integer.class;
+        if (c == boolean.class) return Boolean.class;
+        if (c == long.class) return Long.class;
+        if (c == double.class) return Double.class;
+        if (c == float.class) return Float.class;
+        if (c == byte.class) return Byte.class;
+        if (c == short.class) return Short.class;
+        if (c == char.class) return Character.class;
+        return c;
+    }
+
+    /**
+     * 反射调用 UHFInterface / UHFManager 上的方法。
+     * 关键修复：getMethods() 原始实现只按「方法名 + 参数个数」匹配，若 SDK 内存在多个同名重载
+     * （例如 readTag 有 8 参但参数类型不同），可能匹配到类型不兼容的那个，m.invoke 抛
+     * IllegalArgumentException 被上层吞掉，导致读/写永远无声失败。
+     * 现改为：在「同名 + 同参数个数」的候选中，挑【参数类型可赋值兼容】的；若 invoke 因访问权限失败则继续尝试下一个。
+     */
     private Object callIface(String name, Object... args) throws Exception {
         Class<?> clazz = (mIface != null) ? mIfaceClass : mUhfClass;
         Object target = (mIface != null) ? mIface : mUhf;
         if (clazz == null || target == null) throw new IllegalStateException("SDK 未初始化");
+        Exception lastAccess = null;
         for (Method m : clazz.getMethods()) {
-            if (m.getName().equals(name) && m.getParameterTypes().length == args.length) {
+            if (!m.getName().equals(name) || m.getParameterTypes().length != args.length) continue;
+            Class<?>[] pts = m.getParameterTypes();
+            boolean ok = true;
+            for (int i = 0; i < pts.length; i++) {
+                if (args[i] == null) continue;
+                if (!box(pts[i]).isAssignableFrom(args[i].getClass())) { ok = false; break; }
+            }
+            if (!ok) continue;
+            try {
                 return m.invoke(target, args);
+            } catch (java.lang.reflect.InvocationTargetException ite) {
+                Throwable cause = ite.getCause();
+                if (cause instanceof Exception) throw (Exception) cause;
+                throw new RuntimeException(cause);
+            } catch (IllegalAccessException iae) {
+                lastAccess = iae;   // 权限问题，尝试下一个兼容重载
             }
         }
+        if (lastAccess != null) throw lastAccess;
         throw new NoSuchMethodException(name + " arity=" + args.length);
     }
 

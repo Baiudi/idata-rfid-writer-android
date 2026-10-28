@@ -782,9 +782,12 @@ public class MainActivity extends AppCompatActivity {
         int fBank, fStartBit, fLenBits;
         String fData;
         if (tag.tid != null && !tag.tid.isEmpty()) {
+            // TID 过滤：fStartBit=0（TID 区从 0 起），用完整 TID
             fBank = 2; fStartBit = 0; fLenBits = tag.tid.length() * 4; fData = tag.tid;
         } else {
-            String e = tag.epc != null && tag.epc.length() >= 8 ? tag.epc.substring(0, 8) : tag.epc;
+            // 用【完整 EPC】作过滤（fStartBit=32 跳过 CRC+PC）。
+            // 之前只用 EPC 前 8 个 hex：多张资产标签前缀相同时过滤碰撞，readTag 返回 null。
+            String e = tag.epc != null ? tag.epc : "";
             fBank = 1; fStartBit = 32; fLenBits = e.length() * 4; fData = e;
         }
         return new String[]{String.valueOf(fBank), String.valueOf(fStartBit), String.valueOf(fLenBits), fData};
@@ -810,6 +813,8 @@ public class MainActivity extends AppCompatActivity {
         });
         try { latch.await(windowMs, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
         sdk.stopInventory();
+        // 退出盘点模式：单读/单写需要模块处于非连续盘点状态，否则 readTag 可能返回 null
+        sdk.setInventoryMode(0);
         Log.i(TAG, "detectSingleTag: 窗口=" + windowMs + "ms 共看到唯一EPC=" + seen.size() + " " + seen.keySet());
         if (seen.isEmpty()) {
             detectFailReason = "未检测到标签（天线范围内没有可读标签，请确认已点「连接UHF」且标签在天线范围内）";
