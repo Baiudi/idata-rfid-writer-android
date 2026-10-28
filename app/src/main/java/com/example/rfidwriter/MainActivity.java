@@ -455,14 +455,20 @@ public class MainActivity extends AppCompatActivity {
                 return;
             }
             Log.i(TAG, "READ_TEST: 检测到标签 EPC=" + nz(tag.epc) + " TID=" + nz(tag.tid));
+            // 与生产读取路径一致：用检测到的标签构造过滤条件，调用带过滤的同步读（参数齐全）
+            String[] f = buildFilter(tag);
+            int fBank = Integer.parseInt(f[0]);
+            int fStartBit = Integer.parseInt(f[1]);
+            int fLenBits = Integer.parseInt(f[2]);
+            String fData = f[3];
             // TID（bank2, word0, 6 字）——出厂唯一，作物理身份证
-            String tidHex = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
+            String tidHex = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
             Log.i(TAG, "READ_TEST: TID  hex=" + tidHex + "  ascii=" + (tidHex != null ? FormatUtil.hexToAscii(tidHex) : ""));
             // EPC（bank1, word2, 8 字）——跳过前 2 字(CRC/PC)
-            String epcHex = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS);
+            String epcHex = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
             Log.i(TAG, "READ_TEST: EPC  hex=" + epcHex + "  ascii=" + (epcHex != null ? FormatUtil.hexToAscii(epcHex) : ""));
             // USER（bank3, word0, 16 字）
-            String userHex = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS);
+            String userHex = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
             Log.i(TAG, "READ_TEST: USER hex=" + userHex + "  utf8=" + (userHex != null ? FormatUtil.hexToUtf8(userHex) : ""));
         }).start();
     }
