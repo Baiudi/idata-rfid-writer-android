@@ -391,16 +391,23 @@ public class IdataUhfAdapter implements RfidSdk {
                         if (t.epc != null && !t.epc.isEmpty()) cur.add(t.epc);
                     }
                     // 每 ~2s 清空一次去重集，使“再次读到同一标签”也能被重新计数
+                    int forwarded = 0;
                     synchronized (mPollSeen) {
                         if ((++mPollCount % 14) == 0) mPollSeen.clear();
                         for (String epc : cur) {
                             if (!mPollSeen.contains(epc)) {
                                 mPollSeen.add(epc);
+                                forwarded++;
                                 final TagInfo ft = new TagInfo();
                                 ft.epc = epc;
                                 if (mInvCb != null) mMain.post(() -> mInvCb.onTag(ft));
                             }
                         }
+                    }
+                    if (!cur.isEmpty()) {
+                        Log.i(TAG, "轮询解析: 本轮EPC=" + cur.size()
+                                + " 新转发=" + forwarded
+                                + " mInvCb=" + (mInvCb != null));
                     }
                 } catch (Throwable ignore) { /* 轮询异常忽略，继续下一轮 */ }
                 try { Thread.sleep(150); } catch (InterruptedException e) { break; }
@@ -410,6 +417,8 @@ public class IdataUhfAdapter implements RfidSdk {
 
     @Override
     public void stopInventory() {
+        Log.i(TAG, "stopInventory 调用（mPolling " + mPolling.get() + " -> false）",
+                new Throwable("stop来源"));
         mPolling.set(false);
         if (mIface == null && mUhf == null) return;
         try {

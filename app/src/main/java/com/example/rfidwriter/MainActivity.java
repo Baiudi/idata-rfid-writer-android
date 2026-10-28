@@ -785,6 +785,13 @@ public class MainActivity extends AppCompatActivity {
 
     /** 低功率短窗口盘点，收集到的【唯一】标签；多于/少于一张返回 null */
     private TagInfo detectSingleTag(long windowMs) {
+        // 盘点会话进行中绝不允许单读/写入抢占：detectSingleTag 会覆盖共享回调并停止群读，
+        // 导致盘点计数卡死（回调被换成单读回调，标签进来也被静默丢弃）
+        if (inventorying) {
+            runOnUiThread(() -> Toast.makeText(this,
+                    "盘点进行中：请先点「结束盘点」，再使用读取/写入功能", Toast.LENGTH_LONG).show());
+            return null;
+        }
         Map<String, Integer> seen = new ConcurrentHashMap<>();
         CountDownLatch latch = new CountDownLatch(1);
         sdk.setInventoryMode(1);   // 确保开启连续盘点模式（否则 startInventoryTag 不回传标签）
@@ -1016,7 +1023,10 @@ public class MainActivity extends AppCompatActivity {
     private RfidSdk.InventoryCallback makeInventoryCallback() {
         return new RfidSdk.InventoryCallback() {
             @Override public void onTag(TagInfo t) {
-                if (!inventorying || invPaused || t.epc == null || t.epc.isEmpty()) return;
+                if (!inventorying || invPaused || t.epc == null || t.epc.isEmpty()) {
+                    Log.i(TAG, "onTag 丢弃: epc=" + t.epc + " inventorying=" + inventorying + " invPaused=" + invPaused);
+                    return;
+                }
                 int[] s = invStats.computeIfAbsent(t.epc, k -> new int[]{0, -120});
                 s[0]++;
                 int r = Math.round(parseRssi(t.rssi));
@@ -1087,7 +1097,7 @@ public class MainActivity extends AppCompatActivity {
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
                 .setTitle("盘点中：0 张标签")
                 .setView(box)
-                .setNegativeButton("结束盘点", null)
+                .setNegativeButton("结束盘点", (d, w) -> endInventory())
                 .create();
         invDialog = d;
         d.setOnDismissListener(di -> { endInventory(); dlgBtnPause = null; });
