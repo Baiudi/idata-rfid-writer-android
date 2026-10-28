@@ -564,13 +564,14 @@ public class MainActivity extends AppCompatActivity {
                     fBank, fStartBit, fLenBits, fData,
                     3, 0, testStr, PWD, WRITE_TIMEOUT_MS);
             Log.i(TAG, "WRITE_TEST: 写入 ok=" + ok + "  测试串=" + testStr);
-            if (ok) {
+            // 无条件回读 USER 区：即便写返回 false，也尝试读一次，以区分“标签拒绝写”与“USER 区根本读不到”
+            {
                 byte[] bytes = testStr.getBytes(StandardCharsets.UTF_8);
                 int wlen = (bytes.length + 1) / 2;
                 String rHex = sdk.readTagSync(3, 0, wlen, PWD, READ_TIMEOUT_MS);
                 String rStr = rHex != null ? FormatUtil.hexToUtf8(rHex) : "";
                 boolean match = rStr.startsWith(testStr);
-                Log.i(TAG, "WRITE_TEST: 回读 hex=" + rHex + "  回读utf8=" + rStr + "  校验通过=" + match);
+                Log.i(TAG, "WRITE_TEST: 强制回读 hex=" + rHex + "  回读utf8=" + rStr + "  校验通过=" + match);
             }
         }).start();
     }
