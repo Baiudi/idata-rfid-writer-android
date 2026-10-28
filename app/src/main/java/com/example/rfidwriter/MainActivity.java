@@ -56,7 +56,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String TAG = "MainActivity";
     private static final int REQ_PICK_CSV = 1001;
     private static final int REQ_PICK_LEDGER = 1002;
-    private static final String PWD = "00000000";          // 默认访问密码
+    private String PWD = "00000000";                       // 访问密码(hex)，设置页可配置；标签被锁时填入真实密码
     private static final long INVENTORY_WINDOW_MS = 3000;  // 单标签检测窗口（拉长，确保首张标签稳定出现）
     private static final long WRITE_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 3000;
@@ -85,7 +85,7 @@ public class MainActivity extends AppCompatActivity {
     private final List<WriteResult> ledger = new ArrayList<>();
     private ResultAdapter adapter;
 
-    private EditText etPower, etModule, etBank, etStartWord, etSingleAsset, etLocation, etDept, etOwner;
+    private EditText etPower, etModule, etBank, etStartWord, etPwd, etSingleAsset, etLocation, etDept, etOwner;
     private TextView tvStatus, tvProgress, tvDetected, tvSingleResult, tvTitle, tvReadData;
     private TextView tvBadge, tvInvCount, tvLastEpc, tvEpc, tvTid, tvUser;
     private Button btnStartWrite, btnSync, btnWriteSingle, btnInventory, btnBack;
@@ -158,6 +158,7 @@ public class MainActivity extends AppCompatActivity {
 
         // 外壳视图（顶部栏 + 持久状态 + 内容容器）一次性绑定
         prefs = getSharedPreferences(PARAMS, MODE_PRIVATE);
+        PWD = getParamStr("accessPwd", "00000000");   // 启动即载入已配置的访问密码
         mHandleKey = prefs.getInt("handleKey", 0);   // 恢复已学习的手柄触发键
         tvStatus = findViewById(R.id.tvStatus);
         tvProgress = findViewById(R.id.tvProgress);
@@ -253,11 +254,13 @@ public class MainActivity extends AppCompatActivity {
         etModule = r.findViewById(R.id.etModule);
         etBank = r.findViewById(R.id.etBank);
         etStartWord = r.findViewById(R.id.etStartWord);
+        etPwd = r.findViewById(R.id.etPwd);
         // 从持久化参数回填输入框
         etPower.setText(String.valueOf(getParam("power", 30)));
         etModule.setText(String.valueOf(getParam("module", 0)));
         etBank.setText(String.valueOf(getParam("bank", 3)));
         etStartWord.setText(String.valueOf(getParam("startWord", 0)));
+        etPwd.setText(getParamStr("accessPwd", "00000000"));
         r.findViewById(R.id.btnSaveSettings).setOnClickListener(v -> saveParams());
     }
 
@@ -318,6 +321,11 @@ public class MainActivity extends AppCompatActivity {
         return prefs.getInt(name, def);
     }
 
+    private String getParamStr(String name, String def) {
+        String v = prefs.getString(name, def);
+        return (v == null) ? def : v;
+    }
+
     /** 保存设置页参数为持久化值（下次连接自动应用） */
     private void saveParams() {
         prefs.edit()
@@ -325,8 +333,10 @@ public class MainActivity extends AppCompatActivity {
                 .putInt("module", parseInt(etModule, 0))
                 .putInt("bank", parseInt(etBank, 3))
                 .putInt("startWord", parseInt(etStartWord, 0))
+                .putString("accessPwd", etPwd.getText().toString().trim())
                 .apply();
-        Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show();
+        PWD = getParamStr("accessPwd", "00000000");   // 立即生效，写/读均使用新密码
+        Toast.makeText(this, "设置已保存（访问密码=" + PWD + "）", Toast.LENGTH_SHORT).show();
     }
 
     // ----------------- 崩溃自诊断（远程排查用） -----------------

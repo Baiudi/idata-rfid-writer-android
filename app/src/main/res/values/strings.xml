@@ -6,6 +6,7 @@
     <string name="hint_module">模块类型（0=UM 1=SLR 2=GX）</string>
     <string name="hint_target_bank">信息写入区（3=USER）</string>
     <string name="hint_start_word">起始字地址 Word（默认0）</string>
+    <string name="hint_access_pwd">访问密码 hex（4字节/8位，默认 00000000；标签被锁定时填入真实密码）</string>
 
     <!-- 页面标题 -->
     <string name="title_settings">设置</string>
