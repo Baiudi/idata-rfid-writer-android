@@ -1097,7 +1097,7 @@ public class MainActivity extends AppCompatActivity {
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
                 .setTitle("盘点中：0 张标签")
                 .setView(box)
-                .setNegativeButton("结束盘点", (d, w) -> endInventory())
+                .setNegativeButton("结束盘点", (dlg, w) -> endInventory())
                 .create();
         invDialog = d;
         d.setOnDismissListener(di -> { endInventory(); dlgBtnPause = null; });
