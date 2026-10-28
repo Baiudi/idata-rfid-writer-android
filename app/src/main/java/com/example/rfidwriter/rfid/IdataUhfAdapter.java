@@ -471,6 +471,7 @@ public class IdataUhfAdapter implements RfidSdk {
                     ok = true;
                     Log.i(TAG, "readTag: ok bank=" + bank + " ptr=" + wordAddr + " len=" + wordLen + " hex=" + data);
                 } else {
+                    Log.w(TAG, "readTag: 返回非预期 r=" + r + " class=" + (r == null ? "null" : r.getClass().getName()));
                     msg = "读取为空（未读到标签，请确认天线范围内有标签）";
                 }
             } catch (Throwable e) {
@@ -507,6 +508,8 @@ public class IdataUhfAdapter implements RfidSdk {
                     Log.i(TAG, "readTag(过滤): ok bank=" + bank + " ptr=" + wordAddr + " len=" + wordLen
                             + " filterEpc=" + filterEpc + " hex=" + data);
                 } else {
+                    Log.w(TAG, "readTag(过滤): 返回非预期 r=" + r + " class=" + (r == null ? "null" : r.getClass().getName())
+                            + " filterEpc=" + filterEpc);
                     msg = "读取为空（未读到匹配标签，请确认过滤条件与天线范围内标签一致）";
                 }
             } catch (Throwable e) {
