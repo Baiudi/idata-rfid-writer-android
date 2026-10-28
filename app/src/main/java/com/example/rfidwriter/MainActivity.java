@@ -496,14 +496,14 @@ public class MainActivity extends AppCompatActivity {
             adp.readModeSetRaw(1, 2, 8, 1);
             String rm = adp.readTagRaw(PWD, 1, 2, 8, epc, 1, 32, epcLen * 4);
             Log.i(TAG, "READ_TEST readModeSet+readTag(1,2,8) -> " + rm);
-            adp.setInventoryBankRaw(1, 2, 8); // 恢复 EPC 盘点
+            adp.readModeSetRaw(1, 2, 8, 1); // 恢复 EPC 盘点
             Log.i(TAG, "READ_TEST: 探针结束 EPC=" + epc);
         }).start();
     }
 
     /** 诊断用：设置盘点返回的 bank 后做短盘点，dump 原始盘点缓存（含 TID/USER 时应在其中） */
     private void probeInventoryBank(IdataUhfAdapter adp, int bank, int ptr, int cnt, String label) {
-        adp.setInventoryBankRaw(bank, ptr, cnt);
+        adp.readModeSetRaw(bank, ptr, cnt, 1);
         sdk.setInventoryMode(1);
         sdk.startInventory(new RfidSdk.InventoryCallback() {
             @Override public void onTag(TagInfo t) { }
@@ -513,7 +513,7 @@ public class MainActivity extends AppCompatActivity {
         String[] raw = adp.readBufferRaw();
         sdk.stopInventory();
         sdk.setInventoryMode(0);
-        adp.setInventoryBankRaw(1, 2, 8); // 恢复默认 EPC 盘点
+        adp.readModeSetRaw(1, 2, 8, 1); // 恢复默认 EPC 盘点
         StringBuilder sb = new StringBuilder(label + " len=" + raw.length);
         int shown = Math.min(raw.length, 30);
         for (int i = 0; i < shown; i++) sb.append(" | ").append(raw[i]);
