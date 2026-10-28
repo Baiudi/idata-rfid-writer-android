@@ -882,6 +882,17 @@ public class IdataUhfAdapter implements RfidSdk {
         return false;
     }
 
+    /** 诊断用：读取当前发射功率(dBm) */
+    public int powerGetRaw() {
+        try { ensureSdk(); Object r = callIface("powerGet"); return r instanceof Integer ? (Integer) r : -1; }
+        catch (Throwable e) { Log.w(TAG, "powerGetRaw 异常", e); return -1; }
+    }
+    /** 诊断用：设置发射功率(dBm)，返回是否成功 */
+    public boolean powerSetRaw(int dbm) {
+        try { ensureSdk(); Object r = callIface("powerSet", dbm); return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "powerSetRaw 异常", e); return false; }
+    }
+
     public void logWriteApi() {
         try {
             ensureSdk();

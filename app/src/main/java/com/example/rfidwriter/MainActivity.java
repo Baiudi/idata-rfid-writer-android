@@ -595,6 +595,28 @@ public class MainActivity extends AppCompatActivity {
             boolean sw1 = adp.setWriteModeRaw(1);
             boolean de1 = adp.writeDataToEpcRaw(PWD, 2, 6, epcTest);
             Log.i(TAG, "WRITE_TEST(控制): setWriteMode(1)+writeDataToEpc ok=" + de1);
+            // ===== 诊断批次：功率 + 三区读路径 + 升功率/供电子写 =====
+            int pwr = adp.powerGetRaw();
+            Log.i(TAG, "WRITE_TEST(诊断): powerGet=" + pwr + " dBm");
+            boolean pset = adp.powerSetRaw(30);
+            Log.i(TAG, "WRITE_TEST(诊断): powerSet(30)=" + pset + " now=" + adp.powerGetRaw());
+            String rEpc = adp.readTagRaw(PWD, 1, 2, 6, "", 0, 0, 0);
+            Log.i(TAG, "WRITE_TEST(诊断): readTagRaw EPC=" + rEpc);
+            String rUser = adp.readTagRaw(PWD, 3, 0, 8, "", 0, 0, 0);
+            Log.i(TAG, "WRITE_TEST(诊断): readTagRaw USER=" + rUser);
+            String rTid = adp.readTagRaw(PWD, 2, 0, 8, "", 0, 0, 0);
+            Log.i(TAG, "WRITE_TEST(诊断): readTagRaw TID=" + rTid);
+            boolean okP = sdk.writeTagWithFilterSync(fBank, fStartBit, fLenBits, fData, 3, 0, testStr, PWD, WRITE_TIMEOUT_MS);
+            Log.i(TAG, "WRITE_TEST(诊断): 升功率后 USER写 ok=" + okP);
+            // 供电子下再试：重新开启盘点保持场强，立即读/写
+            sdk.setInventoryMode(1);
+            sdk.startInventory(tag -> {});
+            try { Thread.sleep(1500); } catch (InterruptedException ignore) {}
+            String rEpc2 = adp.readTagRaw(PWD, 1, 2, 6, "", 0, 0, 0);
+            Log.i(TAG, "WRITE_TEST(诊断/供电子): readTagRaw EPC=" + rEpc2);
+            boolean okLive = sdk.writeTagWithFilterSync(fBank, fStartBit, fLenBits, fData, 3, 0, testStr, PWD, WRITE_TIMEOUT_MS);
+            Log.i(TAG, "WRITE_TEST(诊断/供电子): 供电子下 USER写 ok=" + okLive);
+            sdk.stopInventory();
         }).start();
     }
 
