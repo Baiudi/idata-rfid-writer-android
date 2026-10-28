@@ -802,4 +802,34 @@ public class IdataUhfAdapter implements RfidSdk {
         catch (Throwable e) { Log.w(TAG, "setFastIDRaw 异常", e); }
         return false;
     }
+
+    /**
+     * 诊断用：枚举系统 UHFManager（活实例）与 UHFInterface 上所有含 "rite" 的方法签名，
+     * 用于确认本固件到底暴露了哪个真实写方法（WriteTagDataAndReadTagData 在本机固件不存在）。
+     */
+    public void logWriteApi() {
+        try {
+            ensureSdk();
+            Class<?> rm = (mRawManager != null) ? mRawManager.getClass()
+                    : (mUhf != null ? mUhf.getClass() : null);
+            if (rm != null) {
+                StringBuilder sb = new StringBuilder("WRITE_API systemUHFManager(" + rm.getName() + "):\n");
+                for (java.lang.reflect.Method m : rm.getMethods()) {
+                    if (m.getName().toLowerCase().contains("rite"))
+                        sb.append("  ").append(m.toString()).append("\n");
+                }
+                Log.i(TAG, sb.toString());
+            }
+            if (mIfaceClass != null) {
+                StringBuilder sb = new StringBuilder("WRITE_API UHFInterface:\n");
+                for (java.lang.reflect.Method m : mIfaceClass.getMethods()) {
+                    if (m.getName().toLowerCase().contains("rite"))
+                        sb.append("  ").append(m.toString()).append("\n");
+                }
+                Log.i(TAG, sb.toString());
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "logWriteApi 异常", e);
+        }
+    }
 }

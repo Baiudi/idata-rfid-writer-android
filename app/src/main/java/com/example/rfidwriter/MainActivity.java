@@ -459,6 +459,7 @@ public class MainActivity extends AppCompatActivity {
             Log.i(TAG, "READ_TEST: 检测到标签 EPC=" + epc);
             if (epc.isEmpty()) { Log.w(TAG, "READ_TEST: EPC 为空，无法构造过滤，跳过探针"); return; }
             IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
+            adp.logWriteApi();   // 诊断：枚举本固件真实存在的写方法签名
             int epcLen = epc.length();
             int fBank = 1, fStartBit = 32, fLenBits = epcLen * 4;
             String fData = epc;
