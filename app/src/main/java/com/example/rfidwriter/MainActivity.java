@@ -57,7 +57,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_PICK_CSV = 1001;
     private static final int REQ_PICK_LEDGER = 1002;
     private static final String PWD = "00000000";          // 默认访问密码
-    private static final long INVENTORY_WINDOW_MS = 1500;  // 单标签检测窗口
+    private static final long INVENTORY_WINDOW_MS = 3000;  // 单标签检测窗口（拉长，确保首张标签稳定出现）
     private static final long WRITE_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 3000;
     private static final int ASSET_BANK = 1;               // 资产编号固定写入 EPC 区
@@ -94,6 +94,7 @@ public class MainActivity extends AppCompatActivity {
     private android.content.SharedPreferences prefs;
     private Map<String, String> lastReadInfo;   // 读取标签页：最近一次读取结果（供导出）
     private TagInfo lastDetectedTag;
+    private String detectFailReason = "";   // detectSingleTag 返回 null 时的原因，供 UI 展示
 
     private volatile boolean writing = false;
     private volatile boolean inventorying = false;
@@ -783,13 +784,13 @@ public class MainActivity extends AppCompatActivity {
         return new String[]{String.valueOf(fBank), String.valueOf(fStartBit), String.valueOf(fLenBits), fData};
     }
 
-    /** 低功率短窗口盘点，收集到的【唯一】标签；多于/少于一张返回 null */
+    /** 低功率短窗口盘点，收集天线范围内的【唯一】标签；返回该标签，否则返回 null（原因见 detectFailReason） */
     private TagInfo detectSingleTag(long windowMs) {
         // 盘点会话进行中绝不允许单读/写入抢占：detectSingleTag 会覆盖共享回调并停止群读，
         // 导致盘点计数卡死（回调被换成单读回调，标签进来也被静默丢弃）
         if (inventorying) {
-            runOnUiThread(() -> Toast.makeText(this,
-                    "盘点进行中：请先点「结束盘点」，再使用读取/写入功能", Toast.LENGTH_LONG).show());
+            detectFailReason = "盘点进行中：请先点「结束盘点」，再使用读取/写入功能";
+            runOnUiThread(() -> Toast.makeText(this, detectFailReason, Toast.LENGTH_LONG).show());
             return null;
         }
         Map<String, Integer> seen = new ConcurrentHashMap<>();
@@ -803,10 +804,16 @@ public class MainActivity extends AppCompatActivity {
         });
         try { latch.await(windowMs, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
         sdk.stopInventory();
+        Log.i(TAG, "detectSingleTag: 窗口=" + windowMs + "ms 共看到唯一EPC=" + seen.size() + " " + seen.keySet());
         if (seen.size() == 1) {
+            detectFailReason = "";
             TagInfo r = new TagInfo();
             r.epc = seen.keySet().iterator().next();
             return r;
+        } else if (seen.size() == 0) {
+            detectFailReason = "未检测到标签（天线范围内没有可读标签，请确认已点「连接UHF」且标签在天线范围内）";
+        } else {
+            detectFailReason = "检测到 " + seen.size() + " 张标签，不唯一——请只保留一张再读（多标签会被判定为不唯一而放弃）";
         }
         return null;
     }
@@ -822,7 +829,9 @@ public class MainActivity extends AppCompatActivity {
             lastDetectedTag = tag;
             runOnUiThread(() -> {
                 if (tag == null) {
-                    tvDetected.setText("检测到的标签：无（请确保天线范围内仅一张标签）");
+                    tvDetected.setText(detectFailReason.isEmpty()
+                            ? "检测到的标签：无（请确保天线范围内仅一张标签）"
+                            : "检测到的标签：无（" + detectFailReason + "）");
                 } else {
                     tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
                             + (tag.tid != null && !tag.tid.isEmpty() ? "  TID=" + tag.tid : ""));
@@ -852,13 +861,19 @@ public class MainActivity extends AppCompatActivity {
                         if (tvEpc != null) tvEpc.setText("—");
                         if (tvTid != null) tvTid.setText("—");
                         if (tvUser != null) tvUser.setText("—");
-                        setStatus("读取完成：未检测到唯一单张标签");
+                        setStatus("读取完成：" + (detectFailReason.isEmpty() ? "未检测到唯一单张标签" : detectFailReason));
                     });
                     return;
                 }
-                String tid = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS);
-                String epc = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS);
-                String user = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS);
+                // 用检测到的标签构造过滤条件，锁定只读取这一张，避免多标签时误读其他标签
+                String[] f = buildFilter(tag);
+                int fBank = Integer.parseInt(f[0]);
+                int fStartBit = Integer.parseInt(f[1]);
+                int fLenBits = Integer.parseInt(f[2]);
+                String fData = f[3];
+                String tid = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
+                String epc = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
+                String user = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
                 String userUtf8 = user != null ? FormatUtil.hexToUtf8(user) : "";
                 lastReadInfo = new java.util.HashMap<>();
                 lastReadInfo.put("epc", nz(tag.epc));

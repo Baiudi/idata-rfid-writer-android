@@ -485,6 +485,42 @@ public class IdataUhfAdapter implements RfidSdk {
     }
 
     @Override
+    public void readTag(int bank, int wordAddr, int wordLen, String pwd,
+                        String filterEpc, int fBank, int fStartBit, int fLenBits, ReadCallback cb) {
+        if (!mConnected.get()) {
+            if (cb != null) mMain.post(() -> cb.onResult(false, null, "未连接"));
+            return;
+        }
+        new Thread(() -> {
+            boolean ok = false;
+            String data = null;
+            String msg = "";
+            try {
+                // iUHF 的 readTag(pwd, bank, ptr, cnt, filterEpc, fBank, fPtr, fCnt)
+                // 带过滤：仅对匹配 filterEpc 的那张标签读取，杜绝多标签时误读其他标签
+                Object r = callIface("readTag",
+                        pwd == null ? "" : pwd, bank, wordAddr, wordLen,
+                        filterEpc == null ? "" : filterEpc, fBank, fStartBit, fLenBits);
+                if (r instanceof String && !((String) r).isEmpty()) {
+                    data = (String) r;
+                    ok = true;
+                    Log.i(TAG, "readTag(过滤): ok bank=" + bank + " ptr=" + wordAddr + " len=" + wordLen
+                            + " filterEpc=" + filterEpc + " hex=" + data);
+                } else {
+                    msg = "读取为空（未读到匹配标签，请确认过滤条件与天线范围内标签一致）";
+                }
+            } catch (Throwable e) {
+                msg = "读取异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
+                Log.e(TAG, "readTag(过滤) failed", e);
+            }
+            final boolean fok = ok;
+            final String fdata = data;
+            final String fmsg = msg;
+            if (cb != null) mMain.post(() -> cb.onResult(fok, fdata, fmsg));
+        }).start();
+    }
+
+    @Override
     public void writeTagWithFilter(int fBank, int fStartBit, int fLenBits, String fData,
                                    int writeBank, int startWord, String writeData,
                                    String pwd, WriteCallback cb) {
