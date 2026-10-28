@@ -35,7 +35,7 @@ import dalvik.system.DexClassLoader;
  *
  * 本适配层完全复刻这一路径——优先持有 UHFInterface 实例（mIface），所有读/写/盘点都调用
  * UHFInterface 上【已编译好的】方法（readTag / readTagFromBuffer / startInventoryTag /
- * WriteTagDataAndReadTagData / inventoryModeSet / powerOn …）。这些方法是 dex 内已编译的
+ * writeTag / inventoryModeSet / powerOn …）。这些方法是 dex 内已编译的
  * Java 调用，直接落在活实例上，不会受“对 AIDL 代理类做反射找不到方法”的影响——
  * 这正是上一版盘点“无反应”的根因（直接在 getSystemService 返回的代理上反射 inventoryDataGet，
  * 该方法未被代理类直接暴露，NoSuchMethodException 被吞掉，导致轮询永远拿不到标签）。
@@ -54,7 +54,7 @@ import dalvik.system.DexClassLoader;
  *     String  readTag(String pwd,int bank,int ptr,int cnt,String filterEpc,int fBank,int fPtr,int fCnt)
  *     Bundle  readFullEpcTag(String pwd,int bank,int ptr,int cnt,String filterEpc)  // 自动算 EPC 字长
  *     Bundle  WriteTagDataAndReadTagData(String pwd,int bank,int ptr,int cnt,String dataHex,
- *                                        int fBank,int fStartBit,int fLenBits,String fEpc)  // 写后回读
+ *                                        int fBank,int fStartBit,int fLenBits,String fEpc)  // 写后回读（本机固件未暴露，已改走 writeTag）
  *     void    registerUHFCallback(android.os.IUHFResultListener)   // 回调（每元素一条标签串）
  *   内部字段：private com.idata.UHFManager uhfManager  // 活实例，用于直接调用 writeTag(...) 等布尔方法
  *
@@ -601,12 +601,10 @@ public class IdataUhfAdapter implements RfidSdk {
                 String hex = toHex(b);
                 int cnt = b.length / 2;                  // 字数 = 字节数 / 2
 
-                // iUHF 写标签走 UHFInterface.WriteTagDataAndReadTagData（写后回读，返回 Bundle），
-                // 其底层 this.uhfManager.WriteTagDataAndReadTagData(...) 即系统服务暴露的 AIDL 方法。
-                Object r = callIface("WriteTagDataAndReadTagData",
-                                pwd == null ? "" : pwd, writeBank, startWord, cnt, hex,
+                // 本机固件（system UHFManager 活实例）未暴露 WriteTagDataAndReadTagData，
+                // 改走真实存在且可用的 writeTag(...)（见 writeTagOnSystem，返回 boolean）。
+                ok = writeTagOnSystem(pwd == null ? "" : pwd, writeBank, startWord, cnt, hex,
                                 fBank, fStartBit, fLenBits, fData == null ? "" : fData);
-                ok = interpretWriteBundle(r);
                 msg = ok ? "写入成功" : "写入失败（请确认天线范围内仅一张标签，且未被其它标签干扰）";
             } catch (Throwable e) {
                 msg = "写入异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
@@ -616,6 +614,55 @@ public class IdataUhfAdapter implements RfidSdk {
             final String fmsg = msg;
             if (cb != null) mMain.post(() -> cb.onResult(fok, fmsg));
         }).start();
+    }
+
+    /**
+     * 直接打到系统真实存在的写方法 writeTag(String,int,int,int,String,int,int,int,String)->boolean。
+     * 本机固件（system UHFManager 活实例）并未暴露 WriteTagDataAndReadTagData，
+     * 因此写标签改走此路径。优先目标为 mRawManager（UHFInterface 内部持有的真实硬件活实例），
+     * 回退到 mUhf（getSystemService 直取），再回退到 mIface（UHFInterface 本身）。
+     */
+    private boolean writeTagOnSystem(String pwd, int bank, int ptr, int cnt, String dataHex,
+                                     int fBank, int fStartBit, int fLenBits, String fData) {
+        try {
+            ensureSdk();
+            Object target = null;
+            Class<?> clazz = null;
+            if (mRawManager != null) { target = mRawManager; clazz = mRawManager.getClass(); }
+            else if (mUhf != null)  { target = mUhf;      clazz = mUhfClass; }
+            else if (mIface != null) { target = mIface;    clazz = mIfaceClass; }
+            if (target == null || clazz == null) {
+                Log.w(TAG, "writeTagOnSystem: 无可用写目标");
+                return false;
+            }
+            Object[] args = new Object[]{ pwd, bank, ptr, cnt, dataHex, fBank, fStartBit, fLenBits, fData };
+            for (Method m : clazz.getMethods()) {
+                if (!m.getName().equals("writeTag") || m.getParameterTypes().length != 9) continue;
+                Class<?>[] pts = m.getParameterTypes();
+                boolean compatible = true;
+                for (int i = 0; i < 9; i++) {
+                    if (!box(pts[i]).isAssignableFrom(args[i].getClass())) { compatible = false; break; }
+                }
+                if (!compatible) continue;
+                try {
+                    Object r = m.invoke(target, args);
+                    boolean ok = r instanceof Boolean && (Boolean) r;
+                    Log.i(TAG, "writeTagOnSystem: 调用 writeTag 成功 ret=" + ok
+                            + " target=" + clazz.getName());
+                    return ok;
+                } catch (java.lang.reflect.InvocationTargetException ite) {
+                    Throwable cause = ite.getCause();
+                    Log.e(TAG, "writeTagOnSystem: writeTag 调用抛异常", cause);
+                    return false;
+                } catch (IllegalAccessException iae) {
+                    Log.w(TAG, "writeTagOnSystem: writeTag 权限受限，尝试下一重载", iae);
+                }
+            }
+            Log.w(TAG, "writeTagOnSystem: 未找到兼容的 writeTag 方法（target=" + clazz.getName() + "）");
+        } catch (Throwable e) {
+            Log.e(TAG, "writeTagOnSystem 异常", e);
+        }
+        return false;
     }
 
     /** 解释 WriteTagDataAndReadTagData 返回的 Bundle：以 "result" 布尔为主，缺省时看 "data" 是否存在 */
