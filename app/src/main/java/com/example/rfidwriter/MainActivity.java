@@ -434,14 +434,16 @@ public class MainActivity extends AppCompatActivity {
         else { Log.i(TAG, "WRITE_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doWriteTest(), 3000); }
     }
 
-    /** 只读测试主体：检测天线范围内唯一标签，读 TID/EPC/USER 三区并打 hex + 解析日志；无唯一标签则快速盘点诊断 */
+    /** 只读测试主体：检测天线范围内标签，对 EPC/TID/USER 三区分别用【三种过滤方式】做原始探针，
+     *  全部以 RFID_TEST 前缀落 logcat，用于确认设备到底哪种 readTag 参数组合能返回数据。
+     *  同时调用设备预装 readFullEpcTag 并打印其 Bundle（fullEpc/epc/pc/epcWordCount）。 */
     private void doReadTest() {
         if (!sdk.isConnected()) { Log.w(TAG, "READ_TEST: 仍未连接 UHF，跳过"); return; }
         sdk.setPower(getParam("power", 30));
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             if (tag == null) {
-                // 没检测到“唯一”一张：做一次快速盘点，确认天线到底有没有看到标签
+                // 没检测到标签：做一次快速盘点，确认天线到底有没有看到标签
                 java.util.Set<String> all = java.util.Collections.newSetFromMap(
                         new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
                 CountDownLatch latch = new CountDownLatch(1);
@@ -451,37 +453,41 @@ public class MainActivity extends AppCompatActivity {
                 });
                 try { latch.await(1200, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
                 sdk.stopInventory();
-                Log.i(TAG, "READ_TEST: 未检测到唯一单张标签；快速盘点诊断共看到 " + all.size() + " 个唯一 EPC：" + all);
+                Log.i(TAG, "READ_TEST: 未检测到标签；快速盘点诊断共看到 " + all.size() + " 个唯一 EPC：" + all);
                 return;
             }
-            Log.i(TAG, "READ_TEST: 检测到标签 EPC=" + nz(tag.epc) + " TID=" + nz(tag.tid));
-            // 与生产读取路径一致：用检测到的标签构造过滤条件，调用带过滤的同步读（参数齐全）
-            String[] f = buildFilter(tag);
-            int fBank = Integer.parseInt(f[0]);
-            int fStartBit = Integer.parseInt(f[1]);
-            int fLenBits = Integer.parseInt(f[2]);
-            String fData = f[3];
-            // === 诊断 v2：先确认 readTag 机制本身是否可用 ===
-            // (1) 无过滤 readTag（filterEpc="", fBank=0,fPtr=0,fCnt=0）：遍历 bank 1..4 读 TID/USER
-            //     若某 bank 返回数据 → readTag 可用，问题在过滤参数；全 null → 需前置状态(readTagModeSet 等)
-            String epcKnown = nz(tag.epc);
-            Log.i(TAG, "READ_TEST 诊断 epcKnown=" + epcKnown);
-            for (int rb = 1; rb <= 4; rb++) {
-                String tid = sdk.readTagSync(rb, 0, 6, PWD, READ_TIMEOUT_MS, "", 0, 0, 0);
-                Log.i(TAG, "READ_TEST diagNoFilter TID rb=" + rb + " -> " + tid);
+            String epc = nz(tag.epc);
+            Log.i(TAG, "READ_TEST: 检测到标签 EPC=" + epc);
+            if (epc.isEmpty()) { Log.w(TAG, "READ_TEST: EPC 为空，无法构造过滤，跳过读探针"); return; }
+            IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
+            int epcLen = epc.length();
+            int epcWords = Math.max(epcLen / 4, 6);
+            // 1) 设备预装 readFullEpcTag（最稳 EPC 路径），dump Bundle 全部键值
+            android.os.Bundle full = adp.readFullEpcTagRaw(PWD, 1, 2, epcWords, epc);
+            Log.i(TAG, "READ_TEST readFullEpcTagRaw bundle=" + (full == null ? "null" : bundleKeysOf(full)));
+            // 2) 三区 × 三种过滤方式（bit 风格 / iUHF 字风格 / 不过滤），各 1.2s
+            int diagTo = 1200;
+            for (int bank : new int[]{1, 2, 3}) {
+                int len = bank == 1 ? 8 : (bank == 2 ? 6 : 16);
+                String h1 = adp.readTagRaw(PWD, bank, 0, len, epc, 1, 32, epcLen * 4);
+                Log.i(TAG, String.format(java.util.Locale.US,
+                        "READ_TEST raw bank=%d BIT  f(1,32,%d) -> %s", bank, epcLen * 4, h1));
+                String h2 = adp.readTagRaw(PWD, bank, 0, len, epc, 1, 1, 1);
+                Log.i(TAG, String.format(java.util.Locale.US,
+                        "READ_TEST raw bank=%d IUHF f(1,1,1)  -> %s", bank, h2));
+                String h3 = adp.readTagRaw(PWD, bank, 0, len, "", 0, 0, 0);
+                Log.i(TAG, String.format(java.util.Locale.US,
+                        "READ_TEST raw bank=%d NOFILT          -> %s", bank, h3));
             }
-            for (int rb = 1; rb <= 4; rb++) {
-                String user = sdk.readTagSync(rb, 0, 16, PWD, READ_TIMEOUT_MS, "", 0, 0, 0);
-                Log.i(TAG, "READ_TEST diagNoFilter USER rb=" + rb + " -> " + user);
-            }
-            // (2) 有过滤但 fPtr/fCnt=0（仅给 filterEpc，由框架自行算偏移）：遍历 readBank×filterBank
-            for (int rb = 1; rb <= 4; rb++) {
-                for (int fb = 1; fb <= 4; fb++) {
-                    String h = sdk.readTagSync(rb, 2, 8, PWD, READ_TIMEOUT_MS, epcKnown, fb, 0, 0);
-                    Log.i(TAG, "READ_TEST diagFilt0 rb=" + rb + " fb=" + fb + " -> " + h);
-                }
-            }
+            Log.i(TAG, "READ_TEST: 探针结束 EPC=" + epc);
         }).start();
+    }
+
+    /** 把 Bundle 全部键值拼成可读字符串（供 READ_TEST 诊断） */
+    private static String bundleKeysOf(android.os.Bundle b) {
+        StringBuilder sb = new StringBuilder();
+        for (String k : b.keySet()) sb.append(k).append("=").append(b.get(k)).append("; ");
+        return sb.toString();
     }
 
     /** 写测试主体：检测唯一标签，按 TID/EPC 构造过滤条件，往 USER 区写测试串后回读校验 */
@@ -888,11 +894,13 @@ public class MainActivity extends AppCompatActivity {
                 if (tag == null) {
                     runOnUiThread(() -> {
                         if (tvDetected != null)
-                            tvDetected.setText("检测到的标签：无（请确认已点「连接UHF」，且天线范围内【仅一张】标签；\n多张会判定为多标签而放弃读取）");
+                            tvDetected.setText("检测到的标签：无（" + (detectFailReason.isEmpty()
+                                    ? "天线范围内没有可读标签，请确认已点「连接UHF」且标签靠近天线"
+                                    : detectFailReason) + "）");
                         if (tvEpc != null) tvEpc.setText("—");
                         if (tvTid != null) tvTid.setText("—");
                         if (tvUser != null) tvUser.setText("—");
-                        setStatus("读取完成：" + (detectFailReason.isEmpty() ? "未检测到唯一单张标签" : detectFailReason));
+                        setStatus("读取完成：" + (detectFailReason.isEmpty() ? "未检测到标签" : detectFailReason));
                     });
                     return;
                 }

@@ -502,7 +502,7 @@ public class IdataUhfAdapter implements RfidSdk {
                                 pwd == null ? "" : pwd, bank, wordAddr, wordLen,
                                 "", 0, 0, 0);
                 if (r instanceof String && !((String) r).isEmpty()) {
-                    data = (String) r;
+                    data = normalizeHex((String) r);
                     ok = true;
                     Log.i(TAG, "readTag: ok bank=" + bank + " ptr=" + wordAddr + " len=" + wordLen + " hex=" + data);
                 } else {
@@ -538,14 +538,35 @@ public class IdataUhfAdapter implements RfidSdk {
                         pwd == null ? "" : pwd, bank, wordAddr, wordLen,
                         filterEpc == null ? "" : filterEpc, fBank, fStartBit, fLenBits);
                 if (r instanceof String && !((String) r).isEmpty()) {
-                    data = (String) r;
+                    data = normalizeHex((String) r);
                     ok = true;
                     Log.i(TAG, "readTag(过滤): ok bank=" + bank + " ptr=" + wordAddr + " len=" + wordLen
                             + " filterEpc=" + filterEpc + " hex=" + data);
                 } else {
-                    Log.w(TAG, "readTag(过滤): 返回非预期 r=" + r + " class=" + (r == null ? "null" : r.getClass().getName())
-                            + " filterEpc=" + filterEpc);
-                    msg = "读取为空（未读到匹配标签，请确认过滤条件与天线范围内标签一致）";
+                    // 主路径 readTag 返回空：按 iUHF 实测可用路径兜底
+                    if (bank == 1) {
+                        // EPC 区：改走 readFullEpcTag（设备预装 iUHF 的稳妥读 EPC 路径，内部三次重试+过滤）
+                        data = readEpcViaFull(pwd, bank, wordAddr, wordLen, filterEpc);
+                        ok = data != null;
+                        if (ok) Log.i(TAG, "readTag(过滤): EPC 改走 readFullEpcTag 成功 hex=" + data);
+                    } else if (filterEpc != null && !filterEpc.isEmpty()) {
+                        // 非 EPC 区(TID/USER)：再试 iUHF 风格过滤(fBank=1,fPtr=1,fCnt=1，按整字偏移)
+                        try {
+                            Object r2 = callIface("readTag",
+                                    pwd == null ? "" : pwd, bank, wordAddr, wordLen,
+                                    filterEpc, 1, 1, 1);
+                            if (r2 instanceof String && !((String) r2).isEmpty()) {
+                                data = normalizeHex((String) r2);
+                                ok = true;
+                                Log.i(TAG, "readTag(过滤): TID/USER 改走 iUHF 风格过滤(1,1,1) 成功 hex=" + data);
+                            }
+                        } catch (Throwable e2) { Log.w(TAG, "readTag 兜底(1,1,1) 异常", e2); }
+                    }
+                    if (!ok) {
+                        Log.w(TAG, "readTag(过滤): 返回非预期 r=" + r + " class=" + (r == null ? "null" : r.getClass().getName())
+                                + " filterEpc=" + filterEpc + " fBank=" + fBank + " fStartBit=" + fStartBit + " fLenBits=" + fLenBits);
+                        msg = "读取为空（未读到匹配标签，请确认过滤条件与天线范围内标签一致）";
+                    }
                 }
             } catch (Throwable e) {
                 msg = "读取异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
@@ -631,5 +652,69 @@ public class IdataUhfAdapter implements RfidSdk {
         StringBuilder sb = new StringBuilder(b.length * 2);
         for (byte x : b) sb.append(String.format("%02X", x));
         return sb.toString();
+    }
+
+    // ------------------------------------------------------------------
+    // 诊断/读取辅助：归一化 hex、readFullEpcTag 桥接、raw 读（供 READ_TEST 干净探针）
+    // ------------------------------------------------------------------
+
+    /** 归一化 hex：去空白、去 0x 前缀、转大写、剔除非 hex 字符；空则返回 null */
+    private static String normalizeHex(String s) {
+        if (s == null) return null;
+        String t = s.trim();
+        if (t.toLowerCase(java.util.Locale.US).startsWith("0x")) t = t.substring(2);
+        t = t.toUpperCase(java.util.Locale.US).replaceAll("[^0-9A-Fa-f]", "");
+        return t.isEmpty() ? null : t;
+    }
+
+    /**
+     * EPC 区读取兜底：调用设备预装 iUHF 的 readFullEpcTag（返回 Bundle: fullEpc/epc/pc/epcWordCount）。
+     * 这是 iUHF 软件读 EPC 的稳妥路径——内部对匹配 filterEpc 的标签做 SELECT 后读取，并自带三次重试。
+     */
+    private String readEpcViaFull(String pwd, int bank, int ptr, int cnt, String filterEpc) {
+        try {
+            Object r = callIface("readFullEpcTag",
+                    pwd == null ? "" : pwd, bank, ptr, cnt, filterEpc == null ? "" : filterEpc);
+            if (r instanceof android.os.Bundle) {
+                android.os.Bundle b = (android.os.Bundle) r;
+                Log.i(TAG, "readEpcViaFull bundle=" + bundleKeys(b));
+                String epc = b.getString("epc");
+                if (epc == null || epc.isEmpty()) epc = b.getString("fullEpc");
+                return normalizeHex(epc);
+            }
+            Log.w(TAG, "readEpcViaFull 返回非 Bundle: " + (r == null ? "null" : r.getClass().getName()));
+        } catch (Throwable e) {
+            Log.w(TAG, "readEpcViaFull 异常", e);
+        }
+        return null;
+    }
+
+    /** 诊断用：直接调用设备 readFullEpcTag，返回原始 Bundle（含 fullEpc/epc/pc/epcWordCount），不做任何兜底 */
+    public android.os.Bundle readFullEpcTagRaw(String pwd, int bank, int ptr, int cnt, String filterEpc) {
+        try {
+            ensureSdk();
+            Object r = callIface("readFullEpcTag",
+                    pwd == null ? "" : pwd, bank, ptr, cnt, filterEpc == null ? "" : filterEpc);
+            if (r instanceof android.os.Bundle) return (android.os.Bundle) r;
+            Log.w(TAG, "readFullEpcTagRaw 返回非 Bundle: " + (r == null ? "null" : r.getClass().getName()));
+        } catch (Throwable e) {
+            Log.w(TAG, "readFullEpcTagRaw 异常", e);
+        }
+        return null;
+    }
+
+    /** 诊断用：原始 readTag（无兜底），返回归一化 hex 或 null；供 READ_TEST 干净探针区分各参数组合是否可用 */
+    public String readTagRaw(String pwd, int bank, int ptr, int cnt,
+                             String filterEpc, int fBank, int fPtr, int fCnt) {
+        try {
+            Object r = callIface("readTag",
+                    pwd == null ? "" : pwd, bank, ptr, cnt,
+                    filterEpc == null ? "" : filterEpc, fBank, fPtr, fCnt);
+            if (r instanceof String && !((String) r).isEmpty()) return normalizeHex((String) r);
+            Log.w(TAG, "readTagRaw 返回非预期 r=" + r + " class=" + (r == null ? "null" : r.getClass().getName()));
+        } catch (Throwable e) {
+            Log.w(TAG, "readTagRaw 异常", e);
+        }
+        return null;
     }
 }
