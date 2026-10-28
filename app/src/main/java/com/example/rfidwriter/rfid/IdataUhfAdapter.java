@@ -635,6 +635,9 @@ public class IdataUhfAdapter implements RfidSdk {
                 Log.w(TAG, "writeTagOnSystem: 无可用写目标");
                 return false;
             }
+            Log.i(TAG, "writeTagOnSystem args: pwd='" + pwd + "' bank=" + bank + " ptr=" + ptr + " cnt=" + cnt
+                    + " dataHex=" + dataHex + " fBank=" + fBank + " fStartBit=" + fStartBit
+                    + " fLenBits=" + fLenBits + " fData=" + fData + " target=" + clazz.getName());
             Object[] args = new Object[]{ pwd, bank, ptr, cnt, dataHex, fBank, fStartBit, fLenBits, fData };
             for (Method m : clazz.getMethods()) {
                 if (!m.getName().equals("writeTag") || m.getParameterTypes().length != 9) continue;

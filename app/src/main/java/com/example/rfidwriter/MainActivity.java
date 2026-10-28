@@ -556,6 +556,8 @@ public class MainActivity extends AppCompatActivity {
             String[] f = buildFilter(tag);
             int fBank = Integer.parseInt(f[0]), fStartBit = Integer.parseInt(f[1]), fLenBits = Integer.parseInt(f[2]);
             String fData = f[3];
+            Log.i(TAG, "WRITE_TEST: filter fBank=" + fBank + " fStartBit=" + fStartBit + " fLenBits=" + fLenBits
+                    + " fData=" + fData + " epc=" + nz(tag.epc) + " tid=" + nz(tag.tid));
             // 固定前缀 + 6 位零填零时间戳，保证偶数字节、每次不同便于回读校验
             String testStr = String.format(java.util.Locale.ROOT, "RFIDTEST%06d", System.currentTimeMillis() % 1000000);
             boolean ok = sdk.writeTagWithFilterSync(
