@@ -503,8 +503,9 @@ public class MainActivity extends AppCompatActivity {
 
     /** 诊断用：设置盘点返回的 bank 后做短盘点，dump 原始盘点缓存（含 TID/USER 时应在其中） */
     private void probeInventoryBank(IdataUhfAdapter adp, int bank, int ptr, int cnt, String label) {
-        adp.readModeSetRaw(bank, ptr, cnt, 1);
+        // 顺序关键：先开盘点模式（inventoryModeSet），再设 bank（readTagModeSet），否则模式设置会覆盖 bank
         sdk.setInventoryMode(1);
+        adp.readModeSetRaw(bank, ptr, cnt, 1);
         sdk.startInventory(new RfidSdk.InventoryCallback() {
             @Override public void onTag(TagInfo t) { }
             @Override public void onEnd() { }
