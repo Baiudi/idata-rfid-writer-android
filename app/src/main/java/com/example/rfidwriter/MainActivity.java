@@ -610,7 +610,10 @@ public class MainActivity extends AppCompatActivity {
             Log.i(TAG, "WRITE_TEST(诊断): 升功率后 USER写 ok=" + okP);
             // 供电子下再试：重新开启盘点保持场强，立即读/写
             sdk.setInventoryMode(1);
-            sdk.startInventory(tag -> {});
+            sdk.startInventory(new RfidSdk.InventoryCallback() {
+                @Override public void onTag(TagInfo t) { }
+                @Override public void onEnd() { }
+            });
             try { Thread.sleep(1500); } catch (InterruptedException ignore) {}
             String rEpc2 = adp.readTagRaw(PWD, 1, 2, 6, "", 0, 0, 0);
             Log.i(TAG, "WRITE_TEST(诊断/供电子): readTagRaw EPC=" + rEpc2);
