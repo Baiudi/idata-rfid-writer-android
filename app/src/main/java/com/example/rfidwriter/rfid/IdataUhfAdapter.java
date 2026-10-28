@@ -1,6 +1,7 @@
 package com.example.rfidwriter.rfid;
 
 import android.content.Context;
+import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.Log;
@@ -22,65 +23,55 @@ import java.util.concurrent.atomic.AtomicBoolean;
 import dalvik.system.DexClassLoader;
 
 /**
- * iData T1 UHF 原生 SDK 适配层（真实可用版 · 对齐手持机预装 iUHF 软件）。
+ * iData T1 UHF 原生 SDK 适配层（v3 · 完全对齐手持机预装 iUHF 软件）。
  *
  * ############################################################################
- * 根因与修正（参考手持机预装 iUHF 软件逆向结论）
+ * 根因与修正（参考手持机预装 iUHF 软件逆向结论，已逐方法核对）
  * ############################################################################
- * 早期版本把 com.idata.UHFManager 当普通类 new 出来用（DexClassLoader newInstance），
- * 得到的是【没有绑定硬件的空壳对象】—— powerOn() 能返回 true，但 startInventoryTag()
- * 永远不回传标签，readTag() 永远返回空。这就是“读无反应 / 无法正常使用”的真正根因。
- *
- * iUHF（手持机预装，普通非系统 App）的正确路径是：
- *   com.idata.uhfservicesdk.UHFInterface 构造函数：
+ * iUHF（手持机预装，普通非系统 App，包名 com.android.idata.iuhf）能正常读写的真正原因：
+ *   它使用自带的 SDK 包装类 com.idata.uhfservicesdk.UHFInterface，其构造函数为：
  *       this.uhfManager = (com.idata.UHFManager) context.getSystemService("idata_uhf");
- * 即：通过系统 UHF 服务拿到【已经绑定硬件的活实例】。本适配层完全复刻这一路径：
- *   路径 A（首选）：mContext.getSystemService("idata_uhf") 取到活实例（零类加载器问题）；
- *   路径 B（兜底）：DexClassLoader 加载 UHFInterface，取其内部 uhfManager 字段（同样是活实例）；
- *   路径 C（最后）：newInstance（旧逻辑，可能无硬件连接，仅作保底）。
+ *   即：通过系统 UHF 服务拿到【已经绑定硬件的活实例】，再以活实例驱动所有操作。
  *
- * 关于 isAllowedCallerPackage()：iUHF 的 UHFInterface 确有此私有方法，但它【从未被
- * read/write 方法调用】—— readFullEpcTag / writeWholeEpc 直接调用 uhfManager.readTag/
- * writeTag，没有任何调用方包名校验。故第三方 App（含本 App）可正常使用该 SDK。
- *
- * ############################################################################
- * 盘点/读取“无反应”的第二个根因
- * ############################################################################
- * iUHF 的群读是通过轮询 inventoryDataGet()（readTagFromBuffer）拿标签的，而本 App 早期
- * 只依赖 registerUHFCallback 回调。若回调代理未能正确绑定（接口类加载器不匹配等），回调
- * 不触发，detectSingleTag / 盘点就永远收不到标签 → “没有反应”。
- * 本版改为：startInventoryTag 后【额外启动一个轮询线程】，每 ~150ms 调一次 inventoryDataGet()
- * 解析并转发标签，彻底摆脱对回调机制的依赖（回调仍会注册，作为双保险）。
+ * 本适配层完全复刻这一路径——优先持有 UHFInterface 实例（mIface），所有读/写/盘点都调用
+ * UHFInterface 上【已编译好的】方法（readTag / readTagFromBuffer / startInventoryTag /
+ * WriteTagDataAndReadTagData / inventoryModeSet / powerOn …）。这些方法是 dex 内已编译的
+ * Java 调用，直接落在活实例上，不会受“对 AIDL 代理类做反射找不到方法”的影响——
+ * 这正是上一版盘点“无反应”的根因（直接在 getSystemService 返回的代理上反射 inventoryDataGet，
+ * 该方法未被代理类直接暴露，NoSuchMethodException 被吞掉，导致轮询永远拿不到标签）。
  *
  * ############################################################################
- * 已逆向确认的类与方法（来自 iUHF.apk / uhf_sdk.dex）
+ * 已逆向确认并采用的 iUHF SDK 调用契约（来自 iUHF.apk / uhf_sdk.dex）
  * ############################################################################
- *   com.idata.UHFManager（活实例，经 getSystemService("idata_uhf") 取得）
- *     boolean powerOn()                        // 上电
+ *   com.idata.uhfservicesdk.UHFInterface（活实例，构造即绑定硬件）：
+ *     boolean powerOn()                                   // 上电
  *     boolean powerOff()
- *     boolean startInventoryTag()             // 开始群读
- *     boolean stopInventory()
- *     boolean inventoryModeSet(int mode, boolean flag)  // flag=true 才真正开启连续盘点
- *     String[] inventoryDataGet()             // 读取缓存标签数组（iUHF 群读主路径）
- *     void    registerUHFCallback(android.os.IUHFResultListener)
- *     void    unregisterUHFCallback(android.os.IUHFResultListener)
+ *     boolean powerSet(int dbm)                           // 功率
+ *     boolean inventoryModeSet(int mode, boolean flag)    // flag=true 才开启连续盘点
+ *     boolean startInventoryTag()                         // 开始群读
+ *     boolean stopInventory()                             // 停止群读
+ *     String[] readTagFromBuffer()                        // 读取缓存标签数组（iUHF 群读主路径；内部即 inventoryDataGet）
  *     String  readTag(String pwd,int bank,int ptr,int cnt,String filterEpc,int fBank,int fPtr,int fCnt)
- *     boolean writeTag(String pwd,int bank,int ptr,int cnt,String dataHex,int fBank,int fStartBit,int fLenBits,String fEpc)
- *     boolean powerSet(int dbm)
- *   android.os.IUHFResultListener.onUHFCallBack(String[] tags)  // 回调，每元素一条标签信息
+ *     Bundle  readFullEpcTag(String pwd,int bank,int ptr,int cnt,String filterEpc)  // 自动算 EPC 字长
+ *     Bundle  WriteTagDataAndReadTagData(String pwd,int bank,int ptr,int cnt,String dataHex,
+ *                                        int fBank,int fStartBit,int fLenBits,String fEpc)  // 写后回读
+ *     void    registerUHFCallback(android.os.IUHFResultListener)   // 回调（每元素一条标签串）
+ *   内部字段：private com.idata.UHFManager uhfManager  // 活实例，用于直接调用 writeTag(...) 等布尔方法
+ *
+ *   android.os.IUHFResultListener.onUHFCallBack(String[] tags)  // 回调，每元素一条标签信息串
  *
  * 约定（与 iData UHF SDK / 插件一致）：
  *   - Bank 编码 0=RESERVED 1=EPC 2=TID 3=USER
- *   - 过滤地址 fStartBlock 为【bit】，EPC 默认从 32 开始
+ *   - 过滤地址 fStartBit 为【bit】，EPC 默认从 32 开始
  *   - 写入/读取地址为【Word】，1 Word = 4 个 hex 字符 = 2 字节
  *   - 默认访问密码 00000000
  */
 public class IdataUhfAdapter implements RfidSdk {
 
     private static final String TAG = "IdataUhfAdapter";
+    private static final String UHFINTERFACE_CLASS = "com.idata.uhfservicesdk.UHFInterface";
     private static final String MANAGER_CLASS = "com.idata.UHFManager";
     private static final String LISTENER_CLASS = "android.os.IUHFResultListener";
-    private static final String UHFINTERFACE_CLASS = "com.idata.uhfservicesdk.UHFInterface";
     private static final String SYSTEM_SERVICE_NAME = "idata_uhf";
     private static final String DEX_ASSET = "uhf_sdk.dex";
     // 与 assets/uhf_sdk.dex 实际大小一致；不一致则重新拷贝（用于覆盖升级）
@@ -88,8 +79,11 @@ public class IdataUhfAdapter implements RfidSdk {
 
     private Context mContext;                       // application context
     private DexClassLoader mLoader;
-    private Class<?> mUhfClass;                     // 活实例的运行时类（用于反射，杜绝类加载器不一致）
-    private Object mUhf;                            // com.idata.UHFManager 活实例
+    private Class<?> mIfaceClass;                   // UHFInterface 运行时类（来自 uhf_sdk.dex）
+    private Object mIface;                          // com.idata.uhfservicesdk.UHFInterface 活实例
+    private Object mUhf;                            // 兜底：getSystemService 直取的活实例 / newInstance（活实例优先由 mIface 内部持有）
+    private Class<?> mUhfClass;                     // mUhf 的运行时类（兜底路径反射用）
+    private Object mRawManager;                     // mIface 内部持有的 com.idata.UHFManager 活实例（写操作用）
     private Class<?> mListenerIface;
     private Object mListener;                       // IUHFResultListener 的 Proxy
     private InventoryCallback mInvCb;
@@ -100,14 +94,13 @@ public class IdataUhfAdapter implements RfidSdk {
     private String mBindPath = "none";             // 诊断：实际用了哪条绑定路径
     private int mModuleType = 0;
 
-    // 轮询去重：避免每 150ms 把同一批累积缓存反复转发
+    // 轮询去重：避免每轮把同一批累积缓存反复转发
     private final Set<String> mPollSeen = new HashSet<>();
     private int mPollCount = 0;
 
     /** 必须在任意 SDK 调用前（如 MainActivity.onCreate 中）调用，提供 Context 以访问 assets 与创建 DexClassLoader */
     public void attach(Context ctx) {
         mContext = ctx.getApplicationContext();
-        // 提前把 dex 拷出来，确保后面回退路径 / 回调接口类一定能拿到
         try {
             File dexFile = new File(mContext.getCacheDir(), DEX_ASSET);
             if (!dexFile.exists() || dexFile.length() != EXPECTED_DEX_SIZE) {
@@ -116,22 +109,48 @@ public class IdataUhfAdapter implements RfidSdk {
             dexFile.setReadOnly();
             File optDir = mContext.getCodeCacheDir();
             mLoader = new DexClassLoader(dexFile.getAbsolutePath(), optDir.getAbsolutePath(), null, mContext.getClassLoader());
-            // 触发 UHFManager 静态初始化：若其负责向系统注册 "idata_uhf" 服务，则 getSystemService 即可返回活实例
-            try { mLoader.loadClass(MANAGER_CLASS); } catch (Throwable ignore) { }
+            Log.i(TAG, "attach: uhf_sdk.dex 已就绪 (" + dexFile.length() + " bytes)");
         } catch (Throwable e) {
-            Log.w(TAG, "attach: 预加载 dex 失败（将仅尝试系统服务路径）", e);
+            Log.w(TAG, "attach: 预加载 dex 失败", e);
         }
     }
 
     // ------------------------------------------------------------------
-    // 获取 UHF 管理器活实例（路径 A > B > C）
+    // 获取 UHFInterface 活实例（iUHF 的精确路径）
     // ------------------------------------------------------------------
 
+    /**
+     * 优先构造 UHFInterface（其内部 getSystemService("idata_uhf") 拿活实例），
+     * 失败再回退到“直接 getSystemService 取活实例(newInstance 兜底)”的反射路径。
+     */
     private synchronized void ensureSdk() throws Exception {
-        if (mUhf != null && mUhfClass != null) return;
+        if (mIface != null) return;
         if (mContext == null) throw new IllegalStateException("SDK 未 attach(Context)，无法加载");
 
-        // 路径 A（推荐，对齐 iUHF）：从系统 UHF 服务取已经绑定硬件的活实例
+        // 路径 1（首选，对齐 iUHF）：构造 UHFInterface，内部即绑定硬件活实例
+        if (mLoader != null) {
+            try {
+                mIfaceClass = mLoader.loadClass(UHFINTERFACE_CLASS);
+                Constructor<?> c = mIfaceClass.getConstructor(Context.class);
+                mIface = c.newInstance(mContext);
+                // 取出其内部持有的活实例，供写操作 writeTag(...) 等布尔方法直接使用
+                try {
+                    Field f = mIfaceClass.getDeclaredField("uhfManager");
+                    f.setAccessible(true);
+                    mRawManager = f.get(mIface);
+                } catch (Throwable e) {
+                    Log.w(TAG, "ensureSdk: 取内部 uhfManager 字段失败（写操作将改走 WriteTagDataAndReadTagData）", e);
+                }
+                mBindPath = "UHFInterface";
+                Log.i(TAG, "ensureSdk: 路径1 通过 UHFInterface 获取活实例，rawManager=" + (mRawManager != null));
+                return;
+            } catch (Throwable e) {
+                Log.w(TAG, "ensureSdk: 路径1(UHFInterface) 失败，回退路径2", e);
+                mIface = null; mIfaceClass = null; mRawManager = null;
+            }
+        }
+
+        // 路径 2（兜底）：直接 getSystemService 取活实例，对其运行时类反射
         Object svc = null;
         try {
             svc = mContext.getSystemService(SYSTEM_SERVICE_NAME);
@@ -140,35 +159,14 @@ public class IdataUhfAdapter implements RfidSdk {
         }
         if (svc != null) {
             mUhf = svc;
-            mUhfClass = svc.getClass();          // 用运行时类做反射，杜绝类加载器不一致
+            mUhfClass = svc.getClass();
             mBindPath = "getSystemService";
-            Log.i(TAG, "ensureSdk: 路径A 通过系统服务获取 UHFManager，class=" + mUhfClass.getName());
+            Log.i(TAG, "ensureSdk: 路径2 通过系统服务获取 UHFManager，class=" + mUhfClass.getName());
             return;
         }
 
-        // 路径 B（兜底）：iUHF 的 UHFInterface 包装类内部也走 getSystemService，取其内部的 uhfManager 字段
-        if (mLoader != null) {
-            try {
-                Class<?> iface = mLoader.loadClass(UHFINTERFACE_CLASS);
-                Constructor<?> c = iface.getConstructor(Context.class);
-                Object ui = c.newInstance(mContext);
-                Field f = iface.getDeclaredField("uhfManager");
-                f.setAccessible(true);
-                Object mgr = f.get(ui);
-                if (mgr != null) {
-                    mUhf = mgr;
-                    mUhfClass = mgr.getClass();
-                    mBindPath = "UHFInterface";
-                    Log.i(TAG, "ensureSdk: 路径B 通过 UHFInterface.uhfManager 获取，class=" + mUhfClass.getName());
-                    return;
-                }
-            } catch (Throwable e) {
-                Log.w(TAG, "ensureSdk: 路径B 失败，回退路径C", e);
-            }
-        }
-
-        // 路径 C（旧逻辑，可能无硬件连接）：DexClassLoader 加载 dex 后实例化
-        Log.w(TAG, "ensureSdk: 系统服务与 UHFInterface 均取不到，回退到 DexClassLoader newInstance（旧路径，可能无硬件连接）");
+        // 路径 3（最后）：DexClassLoader 加载 dex 后实例化（旧逻辑，可能无硬件连接）
+        Log.w(TAG, "ensureSdk: UHFInterface 与系统服务均取不到，回退到 DexClassLoader newInstance（旧路径，可能无硬件连接）");
         if (mLoader == null) throw new IllegalStateException("无系统服务且 dex 未就绪");
         mUhfClass = mLoader.loadClass(MANAGER_CLASS);
         try {
@@ -191,14 +189,14 @@ public class IdataUhfAdapter implements RfidSdk {
 
     private synchronized void ensureListener() throws Exception {
         if (mListener != null) return;
-        // 优先用框架类（android.os.IUHFResultListener 通常随系统服务一起可见）；否则从 dex 取
         try {
             mListenerIface = Class.forName(LISTENER_CLASS);
         } catch (ClassNotFoundException e) {
             if (mLoader == null) throw e;
             mListenerIface = mLoader.loadClass(LISTENER_CLASS);
         }
-        ClassLoader cl = (mUhf != null) ? mUhf.getClass().getClassLoader() : mListenerIface.getClassLoader();
+        ClassLoader cl = (mIface != null) ? mIface.getClass().getClassLoader()
+                : (mUhf != null ? mUhf.getClass().getClassLoader() : mListenerIface.getClassLoader());
         mListener = Proxy.newProxyInstance(cl, new Class<?>[]{mListenerIface},
                 (InvocationHandler) (proxy, method, args) -> {
                     if ("onUHFCallBack".equals(method.getName()) && args != null
@@ -215,18 +213,17 @@ public class IdataUhfAdapter implements RfidSdk {
         for (String raw : tags) {
             if (raw == null || raw.isEmpty()) continue;
             TagInfo t = parseTag(raw);
-            TagInfo finalT = t;
-            mMain.post(() -> mInvCb.onTag(finalT));
+            if (t.epc != null && !t.epc.isEmpty()) {
+                final TagInfo ft = t;
+                mMain.post(() -> mInvCb.onTag(ft));
+            }
         }
     }
 
     /**
      * 解析单条标签信息串。iData UHF 回调/缓存通常返回 EPC 的 hex 串；
      * 部分模式下会用 '|' / ',' / '#' / 空白 追加 TID/RSSI。
-     *
-     * 关键修复：回调里常夹杂纯 RSSI 数值（如 "-40"）。旧逻辑会把整串或首段直接当 EPC，
-     * 导致 RSSI 被误判成“另一张标签”，单张检测 seen 集合出现幻影条目、seen.size()>1 而判定“多张”放弃读取。
-     * 这里只把【偶长度、纯 0-9A-F 的 hex 串】认作 EPC，纯数字串认作 RSSI，其余忽略，确保单张检测准确。
+     * 只把【偶长度、纯 0-9A-F 的 hex 串】认作 EPC，纯数字串认作 RSSI，其余忽略。
      */
     private TagInfo parseTag(String raw) {
         TagInfo t = new TagInfo();
@@ -256,13 +253,32 @@ public class IdataUhfAdapter implements RfidSdk {
         return true;
     }
 
-    /** 在“活实例”的运行时类上查找方法（避免类加载器不一致导致 invoke 失败） */
-    private Method sdkMethod(String name, Class<?>... paramTypes) throws NoSuchMethodException {
-        return mUhfClass.getMethod(name, paramTypes);
+    /** 在 UHFInterface 类上调用方法（优先）；若 UHFInterface 不可用，回退到 mUhf 运行时类反射 */
+    private Object callIface(String name, Class<?>[] paramTypes, Object... args) throws Exception {
+        if (mIface != null) {
+            return mIfaceClass.getMethod(name, paramTypes).invoke(mIface, args);
+        }
+        if (mUhf != null) {
+            return mUhfClass.getMethod(name, paramTypes).invoke(mUhf, args);
+        }
+        throw new IllegalStateException("SDK 未初始化");
     }
 
-    private Object invokeSdk(String name, Class<?>[] paramTypes, Object... args) throws Exception {
-        return sdkMethod(name, paramTypes).invoke(mUhf, args);
+    /** 群读缓存读取：UHFInterface 路径用 readTagFromBuffer()，兜底路径用 inventoryDataGet() */
+    private String[] pollBuffer() {
+        try {
+            if (mIface != null) {
+                Object o = mIfaceClass.getMethod("readTagFromBuffer").invoke(mIface);
+                return (o instanceof String[]) ? (String[]) o : new String[0];
+            }
+            if (mUhf != null) {
+                Object o = mUhfClass.getMethod("inventoryDataGet").invoke(mUhf);
+                return (o instanceof String[]) ? (String[]) o : new String[0];
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "pollBuffer 异常（忽略，继续下一轮）", e);
+        }
+        return new String[0];
     }
 
     // ------------------------------------------------------------------
@@ -277,7 +293,7 @@ public class IdataUhfAdapter implements RfidSdk {
             String msg;
             try {
                 ensureSdk();
-                Object r = sdkMethod("powerOn").invoke(mUhf);
+                Object r = callIface("powerOn");
                 ok = r instanceof Boolean && (Boolean) r;
                 msg = ok ? ("UHF 已连接（绑定路径：" + mBindPath + "）")
                         : "UHF 初始化失败（powerOn 返回 false，请确认设备 UHF 模块正常）";
@@ -297,9 +313,9 @@ public class IdataUhfAdapter implements RfidSdk {
     public void release() {
         mPolling.set(false);
         try {
-            if (mUhf != null) {
-                sdkMethod("stopInventory").invoke(mUhf);
-                sdkMethod("powerOff").invoke(mUhf);
+            if (mIface != null || mUhf != null) {
+                callIface("stopInventory");
+                callIface("powerOff");
             }
         } catch (Throwable ignore) { /* best effort */ }
         mConnected.set(false);
@@ -307,68 +323,63 @@ public class IdataUhfAdapter implements RfidSdk {
 
     @Override
     public void setPower(int dbm) {
-        if (!mConnected.get() || mUhf == null) return;
+        if (!mConnected.get()) return;
         try {
-            sdkMethod("powerSet", int.class).invoke(mUhf, dbm);
+            callIface("powerSet", int.class, dbm);
         } catch (Throwable ignore) { /* best effort */ }
     }
 
     @Override
     public void setInventoryMode(int mode) {
-        if (!mConnected.get() || mUhf == null) return;
+        if (!mConnected.get()) return;
         try {
             // iData UHFManager.inventoryModeSet(int mode, boolean flag)：
             // flag=true 才真正开启盘点模式（连续盘点才会回传标签）。
-            // mode≠0 即开启，避免“读无反应”。
-            sdkMethod("inventoryModeSet", int.class, boolean.class)
-                    .invoke(mUhf, mode, mode != 0);
+            callIface("inventoryModeSet", int.class, boolean.class, mode, mode != 0);
             Log.i(TAG, "setInventoryMode: mode=" + mode + " flag=" + (mode != 0));
         } catch (Throwable ignore) { /* best effort */ }
     }
 
     @Override
     public void startInventory(InventoryCallback cb) {
-        if (!mConnected.get() || mUhf == null || cb == null) return;
+        if (!mConnected.get() || cb == null) return;
         mInvCb = cb;
         try {
             // 回调作为双保险注册（即便代理未正确绑定，下面轮询仍会给出标签）
             ensureListener();
             try {
-                sdkMethod("registerUHFCallback", mListenerIface).invoke(mUhf, mListener);
+                callIface("registerUHFCallback", mListenerIface, mListener);
             } catch (Throwable e) {
                 Log.w(TAG, "registerUHFCallback 绑定失败（忽略，走轮询路径）", e);
             }
-            sdkMethod("startInventoryTag").invoke(mUhf);
+            callIface("startInventoryTag");
+            Log.i(TAG, "startInventory: startInventoryTag 已调用");
         } catch (Throwable e) {
             Log.e(TAG, "startInventory failed", e);
         }
-        // 轮询 inventoryDataGet()：iUHF 群读主路径，不依赖回调是否触发
+        // 轮询 readTagFromBuffer()：iUHF 群读主路径，不依赖回调是否触发
         mPollSeen.clear();
         mPollCount = 0;
         mPolling.set(true);
         new Thread(() -> {
             while (mPolling.get()) {
                 try {
-                    Object o = sdkMethod("inventoryDataGet").invoke(mUhf);
-                    if (o instanceof String[]) {
-                        String[] arr = (String[]) o;
-                        Set<String> cur = new HashSet<>();
-                        for (String raw : arr) {
-                            if (raw == null || raw.isEmpty()) continue;
-                            TagInfo t = parseTag(raw);
-                            if (t.epc != null && !t.epc.isEmpty()) cur.add(t.epc);
-                        }
-                        // 每 ~2s 清空一次去重集，使“再次读到同一标签”也能被重新计数
-                        synchronized (mPollSeen) {
-                            if ((++mPollCount % 14) == 0) mPollSeen.clear();
-                            for (String epc : cur) {
-                                if (!mPollSeen.contains(epc)) {
-                                    mPollSeen.add(epc);
-                                    TagInfo t = new TagInfo();
-                                    t.epc = epc;
-                                    final TagInfo ft = t;
-                                    if (mInvCb != null) mMain.post(() -> mInvCb.onTag(ft));
-                                }
+                    String[] arr = pollBuffer();
+                    Set<String> cur = new HashSet<>();
+                    for (String raw : arr) {
+                        if (raw == null || raw.isEmpty()) continue;
+                        TagInfo t = parseTag(raw);
+                        if (t.epc != null && !t.epc.isEmpty()) cur.add(t.epc);
+                    }
+                    // 每 ~2s 清空一次去重集，使“再次读到同一标签”也能被重新计数
+                    synchronized (mPollSeen) {
+                        if ((++mPollCount % 14) == 0) mPollSeen.clear();
+                        for (String epc : cur) {
+                            if (!mPollSeen.contains(epc)) {
+                                mPollSeen.add(epc);
+                                final TagInfo ft = new TagInfo();
+                                ft.epc = epc;
+                                if (mInvCb != null) mMain.post(() -> mInvCb.onTag(ft));
                             }
                         }
                     }
@@ -381,15 +392,15 @@ public class IdataUhfAdapter implements RfidSdk {
     @Override
     public void stopInventory() {
         mPolling.set(false);
-        if (mUhf == null) return;
+        if (mIface == null && mUhf == null) return;
         try {
-            sdkMethod("stopInventory").invoke(mUhf);
+            callIface("stopInventory");
         } catch (Throwable ignore) { /* best effort */ }
     }
 
     @Override
     public void readTag(int bank, int wordAddr, int wordLen, String pwd, ReadCallback cb) {
-        if (!mConnected.get() || mUhf == null) {
+        if (!mConnected.get()) {
             if (cb != null) mMain.post(() -> cb.onResult(false, null, "未连接"));
             return;
         }
@@ -398,10 +409,11 @@ public class IdataUhfAdapter implements RfidSdk {
             String data = null;
             String msg = "";
             try {
-                Object r = sdkMethod("readTag",
+                // iUHF 的 readTag(pwd, bank, ptr, cnt, filterEpc, fBank, fPtr, fCnt)
+                // 单张读取不设置过滤（fBank=0,fPtr=0,fCnt=0），由模块自动选到天线范围内唯一标签。
+                Object r = callIface("readTag",
                                 String.class, int.class, int.class, int.class,
-                                String.class, int.class, int.class, int.class)
-                        .invoke(mUhf,
+                                String.class, int.class, int.class, int.class,
                                 pwd == null ? "" : pwd, bank, wordAddr, wordLen,
                                 "", 0, 0, 0);
                 if (r instanceof String && !((String) r).isEmpty()) {
@@ -426,7 +438,7 @@ public class IdataUhfAdapter implements RfidSdk {
     public void writeTagWithFilter(int fBank, int fStartBit, int fLenBits, String fData,
                                    int writeBank, int startWord, String writeData,
                                    String pwd, WriteCallback cb) {
-        if (!mConnected.get() || mUhf == null) {
+        if (!mConnected.get()) {
             if (cb != null) mMain.post(() -> cb.onResult(false, "未连接"));
             return;
         }
@@ -434,7 +446,7 @@ public class IdataUhfAdapter implements RfidSdk {
             boolean ok = false;
             String msg = "";
             try {
-                // 业务层传入的是明文(ASCII/UTF-8)，SDK writeTag 的 data 入参为 hex 字符串，这里转换。
+                // 业务层传入的是明文(ASCII/UTF-8)，SDK 入参为 hex 字符串，这里转换。
                 byte[] b = writeData.getBytes(StandardCharsets.UTF_8);
                 if (b.length % 2 != 0) {                  // 凑成整字节
                     byte[] p = new byte[b.length + 1];
@@ -443,14 +455,16 @@ public class IdataUhfAdapter implements RfidSdk {
                 }
                 String hex = toHex(b);
                 int cnt = b.length / 2;                  // 字数 = 字节数 / 2
-                Object r = sdkMethod("writeTag",
+
+                // iUHF 写标签走 UHFInterface.WriteTagDataAndReadTagData（写后回读，返回 Bundle），
+                // 其底层 this.uhfManager.WriteTagDataAndReadTagData(...) 即系统服务暴露的 AIDL 方法。
+                Object r = callIface("WriteTagDataAndReadTagData",
                                 String.class, int.class, int.class, int.class, String.class,
-                                int.class, int.class, int.class, String.class)
-                        .invoke(mUhf,
+                                int.class, int.class, int.class, String.class,
                                 pwd == null ? "" : pwd, writeBank, startWord, cnt, hex,
                                 fBank, fStartBit, fLenBits, fData == null ? "" : fData);
-                ok = r instanceof Boolean && (Boolean) r;
-                msg = ok ? "写入成功" : "写入失败（writeTag 返回 false，请确认仅一张标签在天线范围内）";
+                ok = interpretWriteBundle(r);
+                msg = ok ? "写入成功" : "写入失败（请确认天线范围内仅一张标签，且未被其它标签干扰）";
             } catch (Throwable e) {
                 msg = "写入异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
                 Log.e(TAG, "writeTagWithFilter failed", e);
@@ -459,6 +473,27 @@ public class IdataUhfAdapter implements RfidSdk {
             final String fmsg = msg;
             if (cb != null) mMain.post(() -> cb.onResult(fok, fmsg));
         }).start();
+    }
+
+    /** 解释 WriteTagDataAndReadTagData 返回的 Bundle：以 "result" 布尔为主，缺省时看 "data" 是否存在 */
+    private boolean interpretWriteBundle(Object r) {
+        if (!(r instanceof Bundle)) {
+            Log.w(TAG, "write bundle 非 Bundle: " + (r == null ? "null" : r.getClass().getName()));
+            return false;
+        }
+        Bundle b = (Bundle) r;
+        Log.i(TAG, "write bundle keys=" + bundleKeys(b));
+        if (b.containsKey("result")) return b.getBoolean("result", false);
+        // 部分固件用 data 字段回读；有 data 视为成功
+        String data = b.getString("data");
+        return data != null && !data.isEmpty();
+    }
+
+    private static String bundleKeys(Bundle b) {
+        java.util.Set<String> ks = b.keySet();
+        StringBuilder sb = new StringBuilder();
+        for (String k : ks) sb.append(k).append("=").append(b.get(k)).append("; ");
+        return sb.toString();
     }
 
     @Override
