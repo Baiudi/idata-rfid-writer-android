@@ -443,7 +443,6 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             if (tag == null) {
-                // 没检测到标签：做一次快速盘点，确认天线到底有没有看到标签
                 java.util.Set<String> all = java.util.Collections.newSetFromMap(
                         new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
                 CountDownLatch latch = new CountDownLatch(1);
@@ -458,45 +457,40 @@ public class MainActivity extends AppCompatActivity {
             }
             String epc = nz(tag.epc);
             Log.i(TAG, "READ_TEST: 检测到标签 EPC=" + epc);
-            if (epc.isEmpty()) { Log.w(TAG, "READ_TEST: EPC 为空，无法构造过滤，跳过读探针"); return; }
+            if (epc.isEmpty()) { Log.w(TAG, "READ_TEST: EPC 为空，无法构造过滤，跳过探针"); return; }
             IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
             int epcLen = epc.length();
-            int epcWords = Math.max(epcLen / 4, 6);
-            // 1) 设备预装 readFullEpcTag（最稳 EPC 路径），dump Bundle 全部键值
-            android.os.Bundle full = adp.readFullEpcTagRaw(PWD, 1, 2, epcWords, epc);
-            Log.i(TAG, "READ_TEST readFullEpcTagRaw bundle=" + (full == null ? "null" : bundleKeysOf(full)));
-            // 2) 三区 × 三种过滤方式（bit 风格 / iUHF 字风格 / 不过滤），各 1.2s
-            int diagTo = 1200;
-            for (int bank : new int[]{1, 2, 3}) {
-                int len = bank == 1 ? 8 : (bank == 2 ? 6 : 16);
-                String h1 = adp.readTagRaw(PWD, bank, 0, len, epc, 1, 32, epcLen * 4);
-                Log.i(TAG, String.format(java.util.Locale.US,
-                        "READ_TEST raw bank=%d BIT  f(1,32,%d) -> %s", bank, epcLen * 4, h1));
-                String h2 = adp.readTagRaw(PWD, bank, 0, len, epc, 1, 1, 1);
-                Log.i(TAG, String.format(java.util.Locale.US,
-                        "READ_TEST raw bank=%d IUHF f(1,1,1)  -> %s", bank, h2));
-                String h3 = adp.readTagRaw(PWD, bank, 0, len, "", 0, 0, 0);
-                Log.i(TAG, String.format(java.util.Locale.US,
-                        "READ_TEST raw bank=%d NOFILT          -> %s", bank, h3));
-            }
-            // 3) 经 inventory 多 bank 读取探针：设置 inventoryTagBankSet 后盘点，dump 原始缓存看 TID/USER 是否随 EPC 返回
-            probeInventoryBank(adp, 1, 2, 8, "EPC-default");
-            probeInventoryBank(adp, 2, 0, 6, "TID");
-            probeInventoryBank(adp, 3, 0, 16, "USER");
-            // 4) FastID 探针：开启后盘点应一并回传 TID
+            int fBank = 1, fStartBit = 32, fLenBits = epcLen * 4;
+            String fData = epc;
+
+            // ===== A) 写测试：WriteTagDataAndReadTagData 写 "WR"(0x5752) 到 USER(bank3,word0)，EPC 过滤 =====
+            android.os.Bundle wb = adp.writeTagDataAndReadRaw(PWD, 3, 0, 1, "5752", fBank, fStartBit, fLenBits, fData);
+            Log.i(TAG, "READ_TEST WRITE bundle=" + (wb == null ? "null" : bundleKeysOf(wb)));
+            // 写后：用 inventory bank-set 读 USER 看是否回读到写入值
+            probeInventoryBank(adp, 3, 0, 8, "USER-afterWrite");
+
+            // ===== B) 干净 FastID 探针（在任何 bank 设置之前，避免状态污染）=====
             adp.setFastIDRaw(true);
-            probeInventoryBank(adp, 1, 2, 8, "FASTID-on");
+            probeInventoryBank(adp, 1, 2, 8, "FASTID-clean");
             adp.setFastIDRaw(false);
-            // 5) filterSet 选中后 readTag 探针
-            adp.filterSetRaw(1, 0, epcLen, epc, 1);
-            String fs = adp.readTagRaw(PWD, 1, 2, 8, epc, 1, 32, epcLen * 4);
-            Log.i(TAG, "READ_TEST filterSet+readTag(1,2,8) -> " + fs);
-            adp.filterSetRaw(1, 0, 0, "", 0); // 清过滤
-            // 6) readModeSet 后 readTag 探针
+
+            // ===== C) setInventoryExMode 探针 =====
+            adp.setInventoryExModeRaw(1);
+            probeInventoryBank(adp, 1, 2, 8, "EXMODE1");
+            adp.setInventoryExModeRaw(0);
+
+            // ===== D) setFasTidMode 探针 =====
+            adp.setFasTidModeRaw(1);
+            probeInventoryBank(adp, 1, 2, 8, "FASTIDMODE1");
+            adp.setFasTidModeRaw(0);
+
+            // ===== E) readTagModeSet TID/USER（干净顺序：先 inventoryModeSet 再 readTagModeSet）=====
+            probeInventoryBank(adp, 2, 0, 8, "TID");
+            probeInventoryBank(adp, 3, 0, 8, "USER");
+
+            // 恢复默认 EPC 盘点
             adp.readModeSetRaw(1, 2, 8, 1);
-            String rm = adp.readTagRaw(PWD, 1, 2, 8, epc, 1, 32, epcLen * 4);
-            Log.i(TAG, "READ_TEST readModeSet+readTag(1,2,8) -> " + rm);
-            adp.readModeSetRaw(1, 2, 8, 1); // 恢复 EPC 盘点
+            adp.filterSetRaw(1, 0, 0, "", 0);
             Log.i(TAG, "READ_TEST: 探针结束 EPC=" + epc);
         }).start();
     }
@@ -505,20 +499,40 @@ public class MainActivity extends AppCompatActivity {
     private void probeInventoryBank(IdataUhfAdapter adp, int bank, int ptr, int cnt, String label) {
         // 顺序关键：先开盘点模式（inventoryModeSet），再设 bank（readTagModeSet），否则模式设置会覆盖 bank
         sdk.setInventoryMode(1);
-        adp.readModeSetRaw(bank, ptr, cnt, 1);
+        if (bank != 1 || ptr != 2 || cnt != 8) {
+            adp.readModeSetRaw(bank, ptr, cnt, 1);
+        }
         sdk.startInventory(new RfidSdk.InventoryCallback() {
             @Override public void onTag(TagInfo t) { }
             @Override public void onEnd() { }
         });
-        try { Thread.sleep(1500); } catch (InterruptedException ignored) { }
-        String[] raw = adp.readBufferRaw();
+        try { Thread.sleep(800); } catch (InterruptedException ignored) { }
+        String[] mid = adp.readBufferRaw();      // 盘点中读取（累计缓存）
+        try { Thread.sleep(700); } catch (InterruptedException ignored) { }
+        String[] raw = adp.readBufferRaw();      // 停止前再读一次
         sdk.stopInventory();
         sdk.setInventoryMode(0);
         adp.readModeSetRaw(1, 2, 8, 1); // 恢复默认 EPC 盘点
-        StringBuilder sb = new StringBuilder(label + " len=" + raw.length);
-        int shown = Math.min(raw.length, 30);
-        for (int i = 0; i < shown; i++) sb.append(" | ").append(raw[i]);
-        Log.i(TAG, "READ_TEST probeInventoryBank " + sb);
+        dumpBuffer("READ_TEST probeInventoryBank " + label, mergeUnique(mid, raw));
+    }
+
+    /** 把两段盘点缓存去重合并（顺序保留） */
+    private static String[] mergeUnique(String[] a, String[] b) {
+        java.util.LinkedHashSet<String> set = new java.util.LinkedHashSet<>();
+        if (a != null) for (String s : a) if (s != null && !s.isEmpty()) set.add(s);
+        if (b != null) for (String s : b) if (s != null && !s.isEmpty()) set.add(s);
+        return set.toArray(new String[0]);
+    }
+
+    /** 逐元素打印原始盘点缓存，带索引，便于定位 EPC/TID/USER 在数组中的位置 */
+    private void dumpBuffer(String label, String[] raw) {
+        StringBuilder sb = new StringBuilder(label + " len=" + (raw == null ? 0 : raw.length));
+        if (raw != null) {
+            for (int i = 0; i < raw.length; i++) {
+                sb.append("\n   [").append(i).append("]=").append(raw[i]);
+            }
+        }
+        Log.i(TAG, sb.toString());
     }
 
     /** 把 Bundle 全部键值拼成可读字符串（供 READ_TEST 诊断） */

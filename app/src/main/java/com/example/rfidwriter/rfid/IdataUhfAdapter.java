@@ -758,6 +758,42 @@ public class IdataUhfAdapter implements RfidSdk {
         return false;
     }
 
+    /** 诊断用：直接调用 WriteTagDataAndReadTagData（写后回读，返回 Bundle），同步返回原始 Bundle */
+    public android.os.Bundle writeTagDataAndReadRaw(String pwd, int bank, int ptr, int cnt,
+                                                    String dataHex, int fBank, int fStartBit,
+                                                    int fLenBits, String fData) {
+        try {
+            ensureSdk();
+            Object r = callIface("WriteTagDataAndReadTagData",
+                    pwd == null ? "" : pwd, bank, ptr, cnt,
+                    dataHex == null ? "" : dataHex,
+                    fBank, fStartBit, fLenBits, fData == null ? "" : fData);
+            if (r instanceof android.os.Bundle) return (android.os.Bundle) r;
+            Log.w(TAG, "writeTagDataAndReadRaw 返回非 Bundle: " + (r == null ? "null" : r.getClass().getName()));
+        } catch (Throwable e) {
+            Log.w(TAG, "writeTagDataAndReadRaw 异常", e);
+        }
+        return null;
+    }
+
+    /** 诊断用：setInventoryExMode(int) */
+    public boolean setInventoryExModeRaw(int mode) {
+        try { ensureSdk(); Object r = callIface("setInventoryExMode", mode);
+              Log.i(TAG, "setInventoryExModeRaw " + mode + " -> " + r);
+              return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "setInventoryExModeRaw 异常", e); }
+        return false;
+    }
+
+    /** 诊断用：setFasTidMode(int) */
+    public boolean setFasTidModeRaw(int mode) {
+        try { ensureSdk(); Object r = callIface("setFasTidMode", mode);
+              Log.i(TAG, "setFasTidModeRaw " + mode + " -> " + r);
+              return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "setFasTidModeRaw 异常", e); }
+        return false;
+    }
+
     /** 诊断用：setFastID（盘点时一并回传 TID） */
     public boolean setFastIDRaw(boolean on) {
         try { ensureSdk(); Object r = callIface("setFastID", on);
