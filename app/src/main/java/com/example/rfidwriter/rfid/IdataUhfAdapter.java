@@ -253,15 +253,22 @@ public class IdataUhfAdapter implements RfidSdk {
         return true;
     }
 
-    /** 在 UHFInterface 类上调用方法（优先）；若 UHFInterface 不可用，回退到 mUhf 运行时类反射 */
-    private Object callIface(String name, Class<?>[] paramTypes, Object... args) throws Exception {
-        if (mIface != null) {
-            return mIfaceClass.getMethod(name, paramTypes).invoke(mIface, args);
+    /**
+     * 在 UHFInterface（优先）或 mUhf 运行时类上按【方法名 + 参数个数】定位并调用。
+     * 这样无需手写 Class<?>[] 形参数组，也规避了对 AIDL 代理类反射找不到方法的问题——
+     * 因为这里定位的是 UHFInterface 上已编译好的方法（readTag/readTagFromBuffer/startInventoryTag/
+     * WriteTagDataAndReadTagData/inventoryModeSet/powerOn …），它们内部已正确落到活实例。
+     */
+    private Object callIface(String name, Object... args) throws Exception {
+        Class<?> clazz = (mIface != null) ? mIfaceClass : mUhfClass;
+        Object target = (mIface != null) ? mIface : mUhf;
+        if (clazz == null || target == null) throw new IllegalStateException("SDK 未初始化");
+        for (Method m : clazz.getMethods()) {
+            if (m.getName().equals(name) && m.getParameterTypes().length == args.length) {
+                return m.invoke(target, args);
+            }
         }
-        if (mUhf != null) {
-            return mUhfClass.getMethod(name, paramTypes).invoke(mUhf, args);
-        }
-        throw new IllegalStateException("SDK 未初始化");
+        throw new NoSuchMethodException(name + " arity=" + args.length);
     }
 
     /** 群读缓存读取：UHFInterface 路径用 readTagFromBuffer()，兜底路径用 inventoryDataGet() */
@@ -325,7 +332,7 @@ public class IdataUhfAdapter implements RfidSdk {
     public void setPower(int dbm) {
         if (!mConnected.get()) return;
         try {
-            callIface("powerSet", int.class, dbm);
+            callIface("powerSet", dbm);
         } catch (Throwable ignore) { /* best effort */ }
     }
 
@@ -335,7 +342,7 @@ public class IdataUhfAdapter implements RfidSdk {
         try {
             // iData UHFManager.inventoryModeSet(int mode, boolean flag)：
             // flag=true 才真正开启盘点模式（连续盘点才会回传标签）。
-            callIface("inventoryModeSet", int.class, boolean.class, mode, mode != 0);
+            callIface("inventoryModeSet", mode, mode != 0);
             Log.i(TAG, "setInventoryMode: mode=" + mode + " flag=" + (mode != 0));
         } catch (Throwable ignore) { /* best effort */ }
     }
@@ -348,7 +355,7 @@ public class IdataUhfAdapter implements RfidSdk {
             // 回调作为双保险注册（即便代理未正确绑定，下面轮询仍会给出标签）
             ensureListener();
             try {
-                callIface("registerUHFCallback", mListenerIface, mListener);
+                callIface("registerUHFCallback", mListener);
             } catch (Throwable e) {
                 Log.w(TAG, "registerUHFCallback 绑定失败（忽略，走轮询路径）", e);
             }
@@ -412,8 +419,6 @@ public class IdataUhfAdapter implements RfidSdk {
                 // iUHF 的 readTag(pwd, bank, ptr, cnt, filterEpc, fBank, fPtr, fCnt)
                 // 单张读取不设置过滤（fBank=0,fPtr=0,fCnt=0），由模块自动选到天线范围内唯一标签。
                 Object r = callIface("readTag",
-                                String.class, int.class, int.class, int.class,
-                                String.class, int.class, int.class, int.class,
                                 pwd == null ? "" : pwd, bank, wordAddr, wordLen,
                                 "", 0, 0, 0);
                 if (r instanceof String && !((String) r).isEmpty()) {
@@ -459,8 +464,6 @@ public class IdataUhfAdapter implements RfidSdk {
                 // iUHF 写标签走 UHFInterface.WriteTagDataAndReadTagData（写后回读，返回 Bundle），
                 // 其底层 this.uhfManager.WriteTagDataAndReadTagData(...) 即系统服务暴露的 AIDL 方法。
                 Object r = callIface("WriteTagDataAndReadTagData",
-                                String.class, int.class, int.class, int.class, String.class,
-                                int.class, int.class, int.class, String.class,
                                 pwd == null ? "" : pwd, writeBank, startWord, cnt, hex,
                                 fBank, fStartBit, fLenBits, fData == null ? "" : fData);
                 ok = interpretWriteBundle(r);
