@@ -857,6 +857,31 @@ public class IdataUhfAdapter implements RfidSdk {
      * 诊断用：枚举系统 UHFManager（活实例）与 UHFInterface 上【全部】公开方法签名，
      * 用于确认本固件到底暴露了哪个真实写方法（WriteTagDataAndReadTagData 在本机固件不存在）。
      */
+    /** 诊断用：设置写模式 setWriteMode(int) */
+    public boolean setWriteModeRaw(int mode) {
+        try { ensureSdk(); Object r = callIface("setWriteMode", mode);
+              Log.i(TAG, "setWriteModeRaw " + mode + " -> " + r);
+              return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "setWriteModeRaw 异常", e); }
+        return false;
+    }
+
+    /** 诊断用：写 EPC（无过滤）writeDataToEpc(pwd,ptr,cnt,dataHex) */
+    public boolean writeDataToEpcRaw(String pwd, int ptr, int cnt, String data) {
+        try {
+            ensureSdk();
+            byte[] b = data.getBytes(StandardCharsets.UTF_8);
+            if (b.length % 2 != 0) { byte[] p = new byte[b.length + 1]; System.arraycopy(b, 0, p, 0, b.length); b = p; }
+            String hex = toHex(b);
+            int c = b.length / 2;
+            Object r = callIface("writeDataToEpc", pwd == null ? "" : pwd, ptr, c, hex);
+            boolean ok = r instanceof Boolean && (Boolean) r;
+            Log.i(TAG, "writeDataToEpcRaw ptr=" + ptr + " cnt=" + c + " -> " + ok);
+            return ok;
+        } catch (Throwable e) { Log.w(TAG, "writeDataToEpcRaw 异常", e); }
+        return false;
+    }
+
     public void logWriteApi() {
         try {
             ensureSdk();

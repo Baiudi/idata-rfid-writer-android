@@ -587,6 +587,14 @@ public class MainActivity extends AppCompatActivity {
             // 决定性诊断：无过滤写 EPC 区(bank1,word2)，排除“过滤参数语义错误”这一变量
             boolean noFiltOk = sdk.writeTagWithFilterSync(0, 0, 0, "", 1, 2, epcTest, PWD, WRITE_TIMEOUT_MS);
             Log.i(TAG, "WRITE_TEST(控制/无过滤): EPC区写入 ok=" + noFiltOk + " 测试串=" + epcTest);
+            // 试探 setWriteMode(0/1) + 无过滤 writeDataToEpc 是否能让写成功
+            IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
+            boolean sw0 = adp.setWriteModeRaw(0);
+            boolean de0 = adp.writeDataToEpcRaw(PWD, 2, 6, epcTest);
+            Log.i(TAG, "WRITE_TEST(控制): setWriteMode(0)+writeDataToEpc ok=" + de0);
+            boolean sw1 = adp.setWriteModeRaw(1);
+            boolean de1 = adp.writeDataToEpcRaw(PWD, 2, 6, epcTest);
+            Log.i(TAG, "WRITE_TEST(控制): setWriteMode(1)+writeDataToEpc ok=" + de1);
         }).start();
     }
 
