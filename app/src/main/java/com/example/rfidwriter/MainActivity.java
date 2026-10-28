@@ -805,17 +805,25 @@ public class MainActivity extends AppCompatActivity {
         try { latch.await(windowMs, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
         sdk.stopInventory();
         Log.i(TAG, "detectSingleTag: 窗口=" + windowMs + "ms 共看到唯一EPC=" + seen.size() + " " + seen.keySet());
-        if (seen.size() == 1) {
-            detectFailReason = "";
-            TagInfo r = new TagInfo();
-            r.epc = seen.keySet().iterator().next();
-            return r;
-        } else if (seen.size() == 0) {
+        if (seen.isEmpty()) {
             detectFailReason = "未检测到标签（天线范围内没有可读标签，请确认已点「连接UHF」且标签在天线范围内）";
-        } else {
-            detectFailReason = "检测到 " + seen.size() + " 张标签，不唯一——请只保留一张再读（多标签会被判定为不唯一而放弃）";
+            return null;
         }
-        return null;
+        // 取读取次数最多的那张作为锁定目标：单标签正常；多标签时也直接锁定一张继续读取/写入，
+        // 不再整体放弃（满足“多个标签也能读出其中一张”的实际使用场景）
+        String bestEpc = null; int bestCnt = -1;
+        for (java.util.Map.Entry<String, Integer> e : seen.entrySet()) {
+            if (e.getValue() > bestCnt) { bestCnt = e.getValue(); bestEpc = e.getKey(); }
+        }
+        TagInfo r = new TagInfo();
+        r.epc = bestEpc;
+        if (seen.size() > 1) {
+            detectFailReason = "附近检测到 " + seen.size() + " 张标签，已自动锁定读取次数最多的一张（EPC=" + bestEpc
+                    + "）；如只想要这一张，请把其他标签移开天线范围";
+        } else {
+            detectFailReason = "";
+        }
+        return r;
     }
 
     // ----------------- 单张标签写入 -----------------
@@ -834,7 +842,8 @@ public class MainActivity extends AppCompatActivity {
                             : "检测到的标签：无（" + detectFailReason + "）");
                 } else {
                     tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
-                            + (tag.tid != null && !tag.tid.isEmpty() ? "  TID=" + tag.tid : ""));
+                            + (tag.tid != null && !tag.tid.isEmpty() ? "  TID=" + tag.tid : "")
+                            + (detectFailReason.isEmpty() ? "" : "\n(" + detectFailReason + ")"));
                 }
             });
         }).start();
@@ -888,7 +897,8 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> {
                     if (tvDetected != null)
                         tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
-                                + (nz(tid).isEmpty() ? "" : "  TID=" + tid));
+                                + (nz(tid).isEmpty() ? "" : "  TID=" + tid)
+                                + (detectFailReason.isEmpty() ? "" : "\n(" + detectFailReason + ")"));
                     if (tvReadData != null) tvReadData.setText(disp);
                     if (tvEpc != null) tvEpc.setText(nz(tag.epc));
                     if (tvTid != null) tvTid.setText(nz(tid));
