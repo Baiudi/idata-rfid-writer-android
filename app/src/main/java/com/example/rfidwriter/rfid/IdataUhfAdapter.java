@@ -854,7 +854,7 @@ public class IdataUhfAdapter implements RfidSdk {
     }
 
     /**
-     * 诊断用：枚举系统 UHFManager（活实例）与 UHFInterface 上所有含 "rite" 的方法签名，
+     * 诊断用：枚举系统 UHFManager（活实例）与 UHFInterface 上【全部】公开方法签名，
      * 用于确认本固件到底暴露了哪个真实写方法（WriteTagDataAndReadTagData 在本机固件不存在）。
      */
     public void logWriteApi() {
@@ -865,16 +865,14 @@ public class IdataUhfAdapter implements RfidSdk {
             if (rm != null) {
                 StringBuilder sb = new StringBuilder("WRITE_API systemUHFManager(" + rm.getName() + "):\n");
                 for (java.lang.reflect.Method m : rm.getMethods()) {
-                    if (m.getName().toLowerCase().contains("rite"))
-                        sb.append("  ").append(m.toString()).append("\n");
+                    sb.append("  ").append(m.toString()).append("\n");
                 }
                 Log.i(TAG, sb.toString());
             }
             if (mIfaceClass != null) {
                 StringBuilder sb = new StringBuilder("WRITE_API UHFInterface:\n");
                 for (java.lang.reflect.Method m : mIfaceClass.getMethods()) {
-                    if (m.getName().toLowerCase().contains("rite"))
-                        sb.append("  ").append(m.toString()).append("\n");
+                    sb.append("  ").append(m.toString()).append("\n");
                 }
                 Log.i(TAG, sb.toString());
             }
