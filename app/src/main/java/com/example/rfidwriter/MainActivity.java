@@ -461,15 +461,30 @@ public class MainActivity extends AppCompatActivity {
             int fStartBit = Integer.parseInt(f[1]);
             int fLenBits = Integer.parseInt(f[2]);
             String fData = f[3];
-            // TID（bank2, word0, 6 字）——出厂唯一，作物理身份证
-            String tidHex = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
-            Log.i(TAG, "READ_TEST: TID  hex=" + tidHex + "  ascii=" + (tidHex != null ? FormatUtil.hexToAscii(tidHex) : ""));
-            // EPC（bank1, word2, 8 字）——跳过前 2 字(CRC/PC)
-            String epcHex = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
-            Log.i(TAG, "READ_TEST: EPC  hex=" + epcHex + "  ascii=" + (epcHex != null ? FormatUtil.hexToAscii(epcHex) : ""));
-            // USER（bank3, word0, 16 字）
-            String userHex = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
-            Log.i(TAG, "READ_TEST: USER hex=" + userHex + "  utf8=" + (userHex != null ? FormatUtil.hexToUtf8(userHex) : ""));
+            // === 诊断：探测 iData readTag 的真实 bank 编码与 fStartBit ===
+            // 同时试 Gen2(0/1/2/3) 与 iData 1-based(1/2/3/4) 两套编码，fStartBit=32 与 0，
+            // 看哪种组合能读回已知 EPC / 非 null TID，从而确定正确映射。
+            String epcKnown = nz(tag.epc);
+            int flen = epcKnown.length() * 4;
+            Log.i(TAG, "READ_TEST 诊断 epcKnown=" + epcKnown + " flen=" + flen);
+            // EPC 区读取（ptr=2, cnt=8）：成功应回读已知的 EPC（跳过 CRC/PC 后 8 字）
+            int[][][] epcTrials = {{{1,1,32},{2,2,32},{1,1,0},{2,2,0}}};
+            for (int[] t : epcTrials[0]) {
+                String h = sdk.readTagSync(t[0], 2, 8, PWD, READ_TIMEOUT_MS, epcKnown, t[1], t[2], flen);
+                Log.i(TAG, "READ_TEST diagEPC rb=" + t[0] + " fb=" + t[1] + " fs=" + t[2] + " -> " + h);
+            }
+            // TID 区读取（ptr=0, cnt=6）
+            int[][][] tidTrials = {{{2,1,32},{3,2,32},{2,1,0},{3,2,0}}};
+            for (int[] t : tidTrials[0]) {
+                String h = sdk.readTagSync(t[0], 0, 6, PWD, READ_TIMEOUT_MS, epcKnown, t[1], t[2], flen);
+                Log.i(TAG, "READ_TEST diagTID rb=" + t[0] + " fb=" + t[1] + " fs=" + t[2] + " -> " + h);
+            }
+            // USER 区读取（ptr=0, cnt=16）
+            int[][][] userTrials = {{{3,1,32},{4,2,32},{3,1,0},{4,2,0}}};
+            for (int[] t : userTrials[0]) {
+                String h = sdk.readTagSync(t[0], 0, 16, PWD, READ_TIMEOUT_MS, epcKnown, t[1], t[2], flen);
+                Log.i(TAG, "READ_TEST diagUSER rb=" + t[0] + " fb=" + t[1] + " fs=" + t[2] + " -> " + h);
+            }
         }).start();
     }
 
