@@ -461,29 +461,25 @@ public class MainActivity extends AppCompatActivity {
             int fStartBit = Integer.parseInt(f[1]);
             int fLenBits = Integer.parseInt(f[2]);
             String fData = f[3];
-            // === 诊断：探测 iData readTag 的真实 bank 编码与 fStartBit ===
-            // 同时试 Gen2(0/1/2/3) 与 iData 1-based(1/2/3/4) 两套编码，fStartBit=32 与 0，
-            // 看哪种组合能读回已知 EPC / 非 null TID，从而确定正确映射。
+            // === 诊断 v2：先确认 readTag 机制本身是否可用 ===
+            // (1) 无过滤 readTag（filterEpc="", fBank=0,fPtr=0,fCnt=0）：遍历 bank 1..4 读 TID/USER
+            //     若某 bank 返回数据 → readTag 可用，问题在过滤参数；全 null → 需前置状态(readTagModeSet 等)
             String epcKnown = nz(tag.epc);
-            int flen = epcKnown.length() * 4;
-            Log.i(TAG, "READ_TEST 诊断 epcKnown=" + epcKnown + " flen=" + flen);
-            // EPC 区读取（ptr=2, cnt=8）：成功应回读已知的 EPC（跳过 CRC/PC 后 8 字）
-            int[][][] epcTrials = {{{1,1,32},{2,2,32},{1,1,0},{2,2,0}}};
-            for (int[] t : epcTrials[0]) {
-                String h = sdk.readTagSync(t[0], 2, 8, PWD, READ_TIMEOUT_MS, epcKnown, t[1], t[2], flen);
-                Log.i(TAG, "READ_TEST diagEPC rb=" + t[0] + " fb=" + t[1] + " fs=" + t[2] + " -> " + h);
+            Log.i(TAG, "READ_TEST 诊断 epcKnown=" + epcKnown);
+            for (int rb = 1; rb <= 4; rb++) {
+                String tid = sdk.readTagSync(rb, 0, 6, PWD, READ_TIMEOUT_MS, "", 0, 0, 0);
+                Log.i(TAG, "READ_TEST diagNoFilter TID rb=" + rb + " -> " + tid);
             }
-            // TID 区读取（ptr=0, cnt=6）
-            int[][][] tidTrials = {{{2,1,32},{3,2,32},{2,1,0},{3,2,0}}};
-            for (int[] t : tidTrials[0]) {
-                String h = sdk.readTagSync(t[0], 0, 6, PWD, READ_TIMEOUT_MS, epcKnown, t[1], t[2], flen);
-                Log.i(TAG, "READ_TEST diagTID rb=" + t[0] + " fb=" + t[1] + " fs=" + t[2] + " -> " + h);
+            for (int rb = 1; rb <= 4; rb++) {
+                String user = sdk.readTagSync(rb, 0, 16, PWD, READ_TIMEOUT_MS, "", 0, 0, 0);
+                Log.i(TAG, "READ_TEST diagNoFilter USER rb=" + rb + " -> " + user);
             }
-            // USER 区读取（ptr=0, cnt=16）
-            int[][][] userTrials = {{{3,1,32},{4,2,32},{3,1,0},{4,2,0}}};
-            for (int[] t : userTrials[0]) {
-                String h = sdk.readTagSync(t[0], 0, 16, PWD, READ_TIMEOUT_MS, epcKnown, t[1], t[2], flen);
-                Log.i(TAG, "READ_TEST diagUSER rb=" + t[0] + " fb=" + t[1] + " fs=" + t[2] + " -> " + h);
+            // (2) 有过滤但 fPtr/fCnt=0（仅给 filterEpc，由框架自行算偏移）：遍历 readBank×filterBank
+            for (int rb = 1; rb <= 4; rb++) {
+                for (int fb = 1; fb <= 4; fb++) {
+                    String h = sdk.readTagSync(rb, 2, 8, PWD, READ_TIMEOUT_MS, epcKnown, fb, 0, 0);
+                    Log.i(TAG, "READ_TEST diagFilt0 rb=" + rb + " fb=" + fb + " -> " + h);
+                }
             }
         }).start();
     }
