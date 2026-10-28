@@ -584,6 +584,9 @@ public class MainActivity extends AppCompatActivity {
                 String eHex = sdk.readTagSync(1, 2, ew, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
                 Log.i(TAG, "WRITE_TEST(控制): EPC回读 hex=" + eHex);
             }
+            // 决定性诊断：无过滤写 EPC 区(bank1,word2)，排除“过滤参数语义错误”这一变量
+            boolean noFiltOk = sdk.writeTagWithFilterSync(0, 0, 0, "", 1, 2, epcTest, PWD, WRITE_TIMEOUT_MS);
+            Log.i(TAG, "WRITE_TEST(控制/无过滤): EPC区写入 ok=" + noFiltOk + " 测试串=" + epcTest);
         }).start();
     }
 
