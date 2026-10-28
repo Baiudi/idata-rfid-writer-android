@@ -87,6 +87,7 @@ public class MainActivity extends AppCompatActivity {
 
     private EditText etPower, etModule, etBank, etStartWord, etSingleAsset, etLocation, etDept, etOwner;
     private TextView tvStatus, tvProgress, tvDetected, tvSingleResult, tvTitle, tvReadData;
+    private TextView tvBadge, tvInvCount, tvLastEpc, tvEpc, tvTid, tvUser;
     private Button btnStartWrite, btnSync, btnWriteSingle, btnInventory, btnBack;
     private FrameLayout flContent;
     private int currentScreen = SCREEN_HOME;
@@ -159,6 +160,7 @@ public class MainActivity extends AppCompatActivity {
         mHandleKey = prefs.getInt("handleKey", 0);   // 恢复已学习的手柄触发键
         tvStatus = findViewById(R.id.tvStatus);
         tvProgress = findViewById(R.id.tvProgress);
+        tvBadge = findViewById(R.id.tvBadge);
         tvTitle = findViewById(R.id.tvTitle);
         btnBack = findViewById(R.id.btnBack);
         flContent = findViewById(R.id.flContent);
@@ -251,7 +253,7 @@ public class MainActivity extends AppCompatActivity {
         etBank = r.findViewById(R.id.etBank);
         etStartWord = r.findViewById(R.id.etStartWord);
         // 从持久化参数回填输入框
-        etPower.setText(String.valueOf(getParam("power", 15)));
+        etPower.setText(String.valueOf(getParam("power", 30)));
         etModule.setText(String.valueOf(getParam("module", 0)));
         etBank.setText(String.valueOf(getParam("bank", 3)));
         etStartWord.setText(String.valueOf(getParam("startWord", 0)));
@@ -266,6 +268,9 @@ public class MainActivity extends AppCompatActivity {
     private void bindRead(View r) {
         tvDetected = r.findViewById(R.id.tvDetected);
         tvReadData = r.findViewById(R.id.tvReadData);
+        tvEpc = r.findViewById(R.id.tvEpc);
+        tvTid = r.findViewById(R.id.tvTid);
+        tvUser = r.findViewById(R.id.tvUser);
         r.findViewById(R.id.btnDetectSingle).setOnClickListener(v -> readFullTag());
         r.findViewById(R.id.btnExportRead).setOnClickListener(v -> exportRead());
         r.findViewById(R.id.btnGoWriteFromRead).setOnClickListener(v -> showScreen(SCREEN_WRITE));
@@ -288,6 +293,8 @@ public class MainActivity extends AppCompatActivity {
 
     private void bindInventory(View r) {
         btnInventory = r.findViewById(R.id.btnInventory);
+        tvInvCount = r.findViewById(R.id.tvInvCount);
+        tvLastEpc = r.findViewById(R.id.tvLastEpc);
         btnInventory.setOnClickListener(v -> toggleInventory());
         r.findViewById(R.id.btnLocate).setOnClickListener(v -> {
             if (lastDetectedTag != null && !nz(lastDetectedTag.epc).isEmpty()) {
@@ -313,7 +320,7 @@ public class MainActivity extends AppCompatActivity {
     /** 保存设置页参数为持久化值（下次连接自动应用） */
     private void saveParams() {
         prefs.edit()
-                .putInt("power", parseInt(etPower, 15))
+                .putInt("power", parseInt(etPower, 30))
                 .putInt("module", parseInt(etModule, 0))
                 .putInt("bank", parseInt(etBank, 3))
                 .putInt("startWord", parseInt(etStartWord, 0))
@@ -396,7 +403,7 @@ public class MainActivity extends AppCompatActivity {
                 uiHandler.postDelayed(() -> sdk.init(module, (ok2, msg2) -> runOnUiThread(() -> {
                     setStatus(msg2);
                     if (ok2) {
-                        sdk.setPower(getParam("power", 15));
+                        sdk.setPower(getParam("power", 30));
                         sdk.setInventoryMode(0);
                     }
                 })), 800);
@@ -405,7 +412,7 @@ public class MainActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 setStatus(msg);
                 if (ok) {
-                    sdk.setPower(getParam("power", 15));
+                    sdk.setPower(getParam("power", 30));
                     sdk.setInventoryMode(0);
                 }
             });
@@ -429,7 +436,7 @@ public class MainActivity extends AppCompatActivity {
     /** 只读测试主体：检测天线范围内唯一标签，读 TID/EPC/USER 三区并打 hex + 解析日志；无唯一标签则快速盘点诊断 */
     private void doReadTest() {
         if (!sdk.isConnected()) { Log.w(TAG, "READ_TEST: 仍未连接 UHF，跳过"); return; }
-        sdk.setPower(getParam("power", 15));
+        sdk.setPower(getParam("power", 30));
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             if (tag == null) {
@@ -462,7 +469,7 @@ public class MainActivity extends AppCompatActivity {
     /** 写测试主体：检测唯一标签，按 TID/EPC 构造过滤条件，往 USER 区写测试串后回读校验 */
     private void doWriteTest() {
         if (!sdk.isConnected()) { Log.w(TAG, "WRITE_TEST: 仍未连接 UHF，跳过"); return; }
-        sdk.setPower(getParam("power", 15)); // 写单张前调低功率，避免误写邻近标签
+        sdk.setPower(Math.min(getParam("power", 30), 20)); // 写单张前调低功率，避免误写邻近标签
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             if (tag == null) {
@@ -671,10 +678,10 @@ public class MainActivity extends AppCompatActivity {
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
         if (ledger.isEmpty()) { Toast.makeText(this, "请先导入台账", Toast.LENGTH_SHORT).show(); return; }
 
-        int power = getParam("power", 15);
+        int power = getParam("power", 30);
         int infoBank = getParam("bank", 3);      // 信息写入区：默认 USER(3)
         int infoStart = getParam("startWord", 0); // 信息起始字地址：默认 0
-        sdk.setPower(power); // 写单张前调低功率，避免误写邻近标签
+        sdk.setPower(Math.min(power, 20)); // 写单张前调低功率，避免误写邻近标签
 
         writing = true;
         if (btnStartWrite != null) btnStartWrite.setEnabled(false);
@@ -802,7 +809,7 @@ public class MainActivity extends AppCompatActivity {
     /** 检测天线范围内【唯一】一张标签，并在界面显示其 TID/EPC（不写入） */
     private void detectSingle() {
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
-        sdk.setPower(getParam("power", 15));
+        sdk.setPower(getParam("power", 30));
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             lastDetectedTag = tag;
@@ -826,7 +833,7 @@ public class MainActivity extends AppCompatActivity {
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
         reading = true;
         setStatus("正在读取标签…");
-        sdk.setPower(getParam("power", 15));
+        sdk.setPower(getParam("power", 30));
         new Thread(() -> {
             try {
                 TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
@@ -835,6 +842,9 @@ public class MainActivity extends AppCompatActivity {
                     runOnUiThread(() -> {
                         if (tvDetected != null)
                             tvDetected.setText("检测到的标签：无（请确认已点「连接UHF」，且天线范围内【仅一张】标签；\n多张会判定为多标签而放弃读取）");
+                        if (tvEpc != null) tvEpc.setText("—");
+                        if (tvTid != null) tvTid.setText("—");
+                        if (tvUser != null) tvUser.setText("—");
                         setStatus("读取完成：未检测到唯一单张标签");
                     });
                     return;
@@ -858,6 +868,9 @@ public class MainActivity extends AppCompatActivity {
                         tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
                                 + (nz(tid).isEmpty() ? "" : "  TID=" + tid));
                     if (tvReadData != null) tvReadData.setText(disp);
+                    if (tvEpc != null) tvEpc.setText(nz(tag.epc));
+                    if (tvTid != null) tvTid.setText(nz(tid));
+                    if (tvUser != null) tvUser.setText(nz(user) + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8));
                     setStatus("读取完成（TID/EPC/USER 已读，可点「导出读取数据」）");
                 });
             } finally {
@@ -893,7 +906,7 @@ public class MainActivity extends AppCompatActivity {
             try {
             int infoBank = getParam("bank", 3);
             int infoStart = getParam("startWord", 0);
-            sdk.setPower(getParam("power", 15)); // 写单张前调低功率，避免误写邻近标签
+            sdk.setPower(Math.min(getParam("power", 30), 20)); // 写单张前调低功率，避免误写邻近标签
 
                 TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
                 if (tag == null) {
@@ -963,6 +976,8 @@ public class MainActivity extends AppCompatActivity {
         invRows.clear();
         invEpcs.clear();
         invPaused = false;
+        if (tvInvCount != null) tvInvCount.setText("0 个");
+        if (tvLastEpc != null) tvLastEpc.setText("—");
         inventorying = true;
         sdk.setInventoryMode(1);          // 多标签盘点模式
         sdk.startInventory(makeInventoryCallback());
@@ -1006,6 +1021,8 @@ public class MainActivity extends AppCompatActivity {
                 s[0]++;
                 int r = Math.round(parseRssi(t.rssi));
                 if (r > s[1]) s[1] = r;
+                if (tvInvCount != null) tvInvCount.setText(invStats.size() + " 个");
+                if (tvLastEpc != null) tvLastEpc.setText(t.epc);
                 queueInventoryRefresh();
             }
             @Override public void onEnd() { }
@@ -1466,7 +1483,17 @@ public class MainActivity extends AppCompatActivity {
         return "application/octet-stream";
     }
 
-    private void setStatus(String s) { tvStatus.setText("状态：" + s); }
+    private void setStatus(String s) {
+        if (tvStatus != null) tvStatus.setText("状态：" + s);
+        if (tvBadge == null) return;
+        boolean connected = s != null && s.contains("已连接");
+        boolean disconnected = s != null && (s.contains("未连接") || s.contains("断开"));
+        int bg = connected ? R.color.badge_connected_bg : (disconnected ? R.color.badge_disconnected_bg : R.color.pending);
+        int fg = connected ? R.color.badge_connected_fg : (disconnected ? R.color.badge_disconnected_fg : R.color.text_primary);
+        tvBadge.setBackgroundTintList(android.content.res.ColorStateList.valueOf(getColor(bg)));
+        tvBadge.setTextColor(getColor(fg));
+        tvBadge.setText(connected ? "● 已连接 UHF" : (disconnected ? "● 未连接" : "● " + s));
+    }
 
     private int parseInt(EditText et, int def) {
         try { return Integer.parseInt(et.getText().toString().trim()); }

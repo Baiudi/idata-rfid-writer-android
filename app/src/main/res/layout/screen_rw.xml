@@ -6,21 +6,17 @@
 
     <Button
         android:id="@+id/btnGoRead"
+        style="@style/Widget.RfidWriter.PrimaryButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
-        android:minHeight="60dp"
-        android:textSize="18sp"
-        android:textStyle="bold"
         android:text="@string/title_read" />
 
     <Button
         android:id="@+id/btnGoWrite"
+        style="@style/Widget.RfidWriter.OutlineButton"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:layout_marginTop="14dp"
-        android:minHeight="60dp"
-        android:textSize="18sp"
-        android:textStyle="bold"
         android:text="@string/title_write" />
 
     <TextView

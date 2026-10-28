@@ -97,6 +97,7 @@ public class IdataUhfAdapter implements RfidSdk {
     // 轮询去重：避免每轮把同一批累积缓存反复转发
     private final Set<String> mPollSeen = new HashSet<>();
     private int mPollCount = 0;
+    private int mPollLogTick = 0;
 
     /** 必须在任意 SDK 调用前（如 MainActivity.onCreate 中）调用，提供 Context 以访问 assets 与创建 DexClassLoader */
     public void attach(Context ctx) {
@@ -274,18 +275,28 @@ public class IdataUhfAdapter implements RfidSdk {
     /** 群读缓存读取：UHFInterface 路径用 readTagFromBuffer()，兜底路径用 inventoryDataGet() */
     private String[] pollBuffer() {
         try {
+            String[] arr;
             if (mIface != null) {
                 Object o = mIfaceClass.getMethod("readTagFromBuffer").invoke(mIface);
-                return (o instanceof String[]) ? (String[]) o : new String[0];
-            }
-            if (mUhf != null) {
+                arr = (o instanceof String[]) ? (String[]) o : new String[0];
+            } else if (mUhf != null) {
                 Object o = mUhfClass.getMethod("inventoryDataGet").invoke(mUhf);
-                return (o instanceof String[]) ? (String[]) o : new String[0];
+                arr = (o instanceof String[]) ? (String[]) o : new String[0];
+            } else {
+                return new String[0];
             }
+            // 诊断：每 ~12 轮（≈1.8s）打印一次原始缓存，便于确认“到底有没有读到标签”
+            if ((++mPollLogTick % 12) == 0) {
+                StringBuilder sb = new StringBuilder("pollBuffer 原始缓存 len=").append(arr.length);
+                int n = Math.min(arr.length, 6);
+                for (int i = 0; i < n; i++) sb.append(" | ").append(arr[i]);
+                Log.i(TAG, sb.toString());
+            }
+            return arr;
         } catch (Throwable e) {
             Log.w(TAG, "pollBuffer 异常（忽略，继续下一轮）", e);
+            return new String[0];
         }
-        return new String[0];
     }
 
     // ------------------------------------------------------------------
@@ -359,8 +370,9 @@ public class IdataUhfAdapter implements RfidSdk {
             } catch (Throwable e) {
                 Log.w(TAG, "registerUHFCallback 绑定失败（忽略，走轮询路径）", e);
             }
-            callIface("startInventoryTag");
-            Log.i(TAG, "startInventory: startInventoryTag 已调用");
+            Object r = callIface("startInventoryTag");
+            boolean started = r instanceof Boolean ? (Boolean) r : (r != null);
+            Log.i(TAG, "startInventory: startInventoryTag 已调用 ret=" + started);
         } catch (Throwable e) {
             Log.e(TAG, "startInventory failed", e);
         }

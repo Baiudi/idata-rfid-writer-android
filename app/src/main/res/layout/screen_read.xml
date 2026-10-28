@@ -11,10 +11,9 @@
 
         <Button
             android:id="@+id/btnDetectSingle"
+            style="@style/Widget.RfidWriter.PrimaryButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:minHeight="48dp"
-            android:textSize="15sp"
             android:text="@string/btn_detect_single" />
 
         <TextView
@@ -23,34 +22,92 @@
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
             android:text="@string/tv_detected"
-            android:textSize="13sp" />
+            android:textSize="13sp"
+            android:textColor="@color/text_secondary" />
+
+        <!-- EPC / TID / USER 三区结果卡片 -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="EPC（资产编号）"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_secondary" />
+        <TextView
+            android:id="@+id/tvEpc"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/box_bg"
+            android:padding="10dp"
+            android:textSize="14sp"
+            android:textColor="@color/text_primary"
+            android:text="—" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="TID（出厂唯一·物理身份证）"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_secondary" />
+        <TextView
+            android:id="@+id/tvTid"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/box_bg"
+            android:padding="10dp"
+            android:textSize="14sp"
+            android:textColor="@color/text_primary"
+            android:text="—" />
+
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="12dp"
+            android:text="USER（结构化信息）"
+            android:textSize="13sp"
+            android:textStyle="bold"
+            android:textColor="@color/text_secondary" />
+        <TextView
+            android:id="@+id/tvUser"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="4dp"
+            android:background="@drawable/box_bg"
+            android:padding="10dp"
+            android:textSize="14sp"
+            android:textColor="@color/text_primary"
+            android:text="—" />
 
         <TextView
             android:id="@+id/tvReadData"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginTop="8dp"
+            android:layout_marginTop="10dp"
             android:background="#F2F2F2"
             android:padding="8dp"
-            android:textSize="13sp"
+            android:textSize="12sp"
+            android:textColor="@color/text_secondary"
             android:text="@string/tv_read_data" />
 
         <Button
             android:id="@+id/btnExportRead"
+            style="@style/Widget.RfidWriter.OutlineButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:minHeight="48dp"
-            android:textSize="15sp"
             android:text="@string/btn_export_read" />
 
         <Button
             android:id="@+id/btnGoWriteFromRead"
+            style="@style/Widget.RfidWriter.OutlineButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="10dp"
-            android:minHeight="48dp"
-            android:textSize="15sp"
             android:text="@string/btn_go_write" />
 
         <TextView

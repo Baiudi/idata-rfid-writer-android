@@ -2,7 +2,7 @@
     <string name="app_name">iData 资产写标工具</string>
 
     <!-- 参数区 -->
-    <string name="hint_power">写标功率 dBm（5~33，默认15）</string>
+    <string name="hint_power">读写功率 dBm（5~33，读取/盘点默认30，写单张自动降到20避免误写）</string>
     <string name="hint_module">模块类型（0=UM 1=SLR 2=GX）</string>
     <string name="hint_target_bank">信息写入区（3=USER）</string>
     <string name="hint_start_word">起始字地址 Word（默认0）</string>
@@ -42,7 +42,7 @@
     <!-- 区块/说明 -->
     <string name="section_data">数据同步</string>
     <string name="home_hint">顶部「连接UHF」连上设备后即可操作。\n设置：功率/模块/写入区等参数。\n读写标签：读取或写入单张标签。\n盘点：持续群读并统计。</string>
-    <string name="settings_hint">参数说明：\n• 写标功率：5~33dBm，写单张建议 15 左右，定位可拉高。\n• 模块类型：0=UM 1=SLR 2=GX（一般保持 0）。\n• 信息写入区：默认 USER(3)；资产编号固定写入 EPC 区。\n• 起始字地址：信息在 USER 区的起始 Word，默认 0。\n保存后下次连接自动应用。</string>
+    <string name="settings_hint">参数说明：\n• 读写功率：5~33dBm。读取/盘点默认 30（功率越高读距越远，贴在金属设备上的标签建议 30）；写单张自动降到 20 避免误写邻近标签。\n• 模块类型：0=UM 1=SLR 2=GX（一般保持 0）。\n• 信息写入区：默认 USER(3)；资产编号固定写入 EPC 区。\n• 起始字地址：信息在 USER 区的起始 Word，默认 0。\n保存后下次连接自动应用。</string>
     <string name="rw_hint">读取标签：检测天线范围内唯一标签，读取 TID/EPC/USER 并可导出数据。\n写入标签：填写资产信息后写入，也可导入 Excel/CSV 批量写标。</string>
     <string name="read_hint">把一张标签靠近天线，点「检测并读取标签」（或按一下设备手柄键）：TID（出厂唯一）、EPC（资产编号）、USER（结构化信息）会一并显示，点「导出读取数据」可保存为 JSON。\n首次按手柄键会自动记住该键，之后按它就读取一次。</string>
     <string name="write_hint">可写入字段（对应导入模板列）：\n• 资产编号（必填，写 EPC 区）\n• 存放位置 / 使用部门 / 使用人（写 USER 区，可中文）\n点「导出模板」获取 Excel/CSV 模板，填好后「导入数据」→「开始批量写标」。\n也可直接填上方输入框后「写入这张标签」（单张）。</string>

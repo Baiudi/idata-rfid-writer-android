@@ -11,31 +11,25 @@
 
         <Button
             android:id="@+id/btnSettings"
+            style="@style/Widget.RfidWriter.OutlineButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:minHeight="60dp"
-            android:textSize="18sp"
-            android:textStyle="bold"
             android:text="@string/title_settings" />
 
         <Button
             android:id="@+id/btnRw"
+            style="@style/Widget.RfidWriter.PrimaryButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:minHeight="60dp"
-            android:textSize="18sp"
-            android:textStyle="bold"
             android:text="@string/title_rw" />
 
         <Button
             android:id="@+id/btnInventoryHome"
+            style="@style/Widget.RfidWriter.PrimaryButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="12dp"
-            android:minHeight="60dp"
-            android:textSize="18sp"
-            android:textStyle="bold"
             android:text="@string/title_inventory" />
 
         <TextView
@@ -53,21 +47,19 @@
             android:layout_marginTop="6dp">
             <Button
                 android:id="@+id/btnExport"
+                style="@style/Widget.RfidWriter.OutlineButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:minHeight="48dp"
                 android:layout_marginEnd="6dp"
-                android:textSize="15sp"
                 android:text="@string/btn_export" />
             <Button
                 android:id="@+id/btnSync"
+                style="@style/Widget.RfidWriter.OutlineButton"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
                 android:layout_weight="1"
-                android:minHeight="48dp"
                 android:layout_marginStart="6dp"
-                android:textSize="15sp"
                 android:text="@string/btn_sync" />
         </LinearLayout>
 

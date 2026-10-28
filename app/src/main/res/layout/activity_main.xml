@@ -3,6 +3,7 @@
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
+    android:background="@color/bg"
     android:padding="12dp">
 
     <!-- 顶部栏：返回 / 标题 / 连接 / 断开 -->
@@ -26,22 +27,40 @@
             android:gravity="center"
             android:text="@string/app_name"
             android:textSize="18sp"
-            android:textStyle="bold" />
+            android:textStyle="bold"
+            android:textColor="@color/text_primary" />
         <Button
             android:id="@+id/btnConnect"
+            style="@style/Widget.RfidWriter.PrimaryButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:minHeight="44dp"
             android:text="@string/btn_connect"
-            android:textSize="15sp" />
+            android:textSize="15sp"
+            android:minHeight="44dp" />
         <Button
             android:id="@+id/btnDisconnect"
+            style="@style/Widget.RfidWriter.OutlineButton"
             android:layout_width="wrap_content"
             android:layout_height="wrap_content"
-            android:minHeight="44dp"
+            android:layout_marginStart="6dp"
             android:text="@string/btn_disconnect"
-            android:textSize="15sp" />
+            android:textSize="15sp"
+            android:minHeight="44dp" />
     </LinearLayout>
+
+    <!-- 连接状态徽标（颜色随连接状态变化） -->
+    <TextView
+        android:id="@+id/tvBadge"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="8dp"
+        android:padding="8dp"
+        android:gravity="center"
+        android:textSize="14sp"
+        android:textStyle="bold"
+        android:text="● 未连接"
+        android:background="@drawable/badge_bg"
+        android:textColor="@color/badge_disconnected_fg" />
 
     <!-- 持久状态栏 -->
     <TextView
@@ -50,13 +69,15 @@
         android:layout_height="wrap_content"
         android:layout_marginTop="6dp"
         android:text="@string/tv_status"
-        android:textSize="14sp" />
+        android:textSize="14sp"
+        android:textColor="@color/text_secondary" />
     <TextView
         android:id="@+id/tvProgress"
         android:layout_width="match_parent"
         android:layout_height="wrap_content"
         android:text="@string/tv_progress"
-        android:textSize="14sp" />
+        android:textSize="14sp"
+        android:textColor="@color/text_secondary" />
 
     <!-- 当前页面内容（由屏幕路由动态切换） -->
     <FrameLayout

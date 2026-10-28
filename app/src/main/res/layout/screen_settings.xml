@@ -108,11 +108,10 @@
 
         <Button
             android:id="@+id/btnSaveSettings"
+            style="@style/Widget.RfidWriter.PrimaryButton"
             android:layout_width="match_parent"
             android:layout_height="wrap_content"
             android:layout_marginTop="14dp"
-            android:minHeight="48dp"
-            android:textSize="15sp"
             android:text="@string/btn_save_settings" />
 
         <TextView
