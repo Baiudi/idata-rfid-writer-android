@@ -52,7 +52,12 @@ public interface RfidSdk {
     default void setLedBlink(boolean on) { }
 
     /** 按【Word】地址读取某 Bank 的数据，返回十六进制字符串 */
+    /** 不带过滤的单张读（模块自动选到天线范围内标签） */
     void readTag(int bank, int wordAddr, int wordLen, String pwd, ReadCallback cb);
+
+    /** 带过滤的单张读：按 EPC/TID 精确锁定唯一标签，避免多标签环境下误读其他标签 */
+    void readTag(int bank, int wordAddr, int wordLen, String pwd,
+                 String filterEpc, int fBank, int fStartBit, int fLenBits, ReadCallback cb);
 
     /**
      * 带过滤条件的单张标签写入（iData 官方推荐单张写标方式）。
@@ -89,6 +94,27 @@ public interface RfidSdk {
                 lock.notifyAll();
             }
         });
+        synchronized (lock) {
+            long deadline = System.currentTimeMillis() + timeoutMs;
+            while (!done[0]) {
+                long remain = deadline - System.currentTimeMillis();
+                if (remain <= 0) break;
+                try { lock.wait(remain); } catch (InterruptedException e) { Thread.currentThread().interrupt(); break; }
+            }
+        }
+        return out[0];
+    }
+
+    /** 带过滤的同步读；filterEpc 为空串表示不过滤。用于单标签读取时锁定检测到的那张标签。 */
+    default String readTagSync(int bank, int wordAddr, int wordLen, String pwd, long timeoutMs,
+                               String filterEpc, int fBank, int fStartBit, int fLenBits) {
+        final Object lock = new Object();
+        final String[] out = {null};
+        final boolean[] done = {false};
+        readTag(bank, wordAddr, wordLen, pwd, filterEpc, fBank, fStartBit, fLenBits,
+                (ok, dataHex, msg) -> {
+                    synchronized (lock) { out[0] = ok ? dataHex : null; done[0] = true; lock.notifyAll(); }
+                });
         synchronized (lock) {
             long deadline = System.currentTimeMillis() + timeoutMs;
             while (!done[0]) {
