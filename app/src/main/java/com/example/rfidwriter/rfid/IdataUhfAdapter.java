@@ -863,18 +863,24 @@ public class IdataUhfAdapter implements RfidSdk {
             Class<?> rm = (mRawManager != null) ? mRawManager.getClass()
                     : (mUhf != null ? mUhf.getClass() : null);
             if (rm != null) {
-                StringBuilder sb = new StringBuilder("WRITE_API systemUHFManager(" + rm.getName() + "):\n");
-                for (java.lang.reflect.Method m : rm.getMethods()) {
-                    sb.append("  ").append(m.toString()).append("\n");
+                java.lang.reflect.Method[] ms = rm.getMethods();
+                Log.i(TAG, "ALL_API systemUHFManager(" + rm.getName() + ") 共 " + ms.length + " 个方法");
+                for (int i = 0; i < ms.length; i += 12) {
+                    StringBuilder sb = new StringBuilder("ALL_API_MGR[" + i + "]:");
+                    for (int j = i; j < ms.length && j < i + 12; j++)
+                        sb.append("\n  ").append(ms[j].toString());
+                    Log.i(TAG, sb.toString());
                 }
-                Log.i(TAG, sb.toString());
             }
             if (mIfaceClass != null) {
-                StringBuilder sb = new StringBuilder("WRITE_API UHFInterface:\n");
-                for (java.lang.reflect.Method m : mIfaceClass.getMethods()) {
-                    sb.append("  ").append(m.toString()).append("\n");
+                java.lang.reflect.Method[] ms2 = mIfaceClass.getMethods();
+                Log.i(TAG, "ALL_API UHFInterface 共 " + ms2.length + " 个方法");
+                for (int i = 0; i < ms2.length; i += 12) {
+                    StringBuilder sb = new StringBuilder("ALL_API_IF[" + i + "]:");
+                    for (int j = i; j < ms2.length && j < i + 12; j++)
+                        sb.append("\n  ").append(ms2[j].toString());
+                    Log.i(TAG, sb.toString());
                 }
-                Log.i(TAG, sb.toString());
             }
         } catch (Throwable e) {
             Log.w(TAG, "logWriteApi 异常", e);
