@@ -608,6 +608,12 @@ public class MainActivity extends AppCompatActivity {
             Log.i(TAG, "WRITE_TEST(诊断): readTagRaw TID=" + rTid);
             boolean okP = sdk.writeTagWithFilterSync(fBank, fStartBit, fLenBits, fData, 3, 0, testStr, PWD, WRITE_TIMEOUT_MS);
             Log.i(TAG, "WRITE_TEST(诊断): 升功率后 USER写 ok=" + okP);
+            // 带 EPC 过滤的读（对照 iData 官方 readTagWithFilter 范例：必须带过滤才能选中标签）
+            String rFilt = adp.readTagRaw(PWD, 1, 2, 6, fData, 1, 32, 96);
+            Log.i(TAG, "WRITE_TEST(诊断): readTagRaw(带EPC过滤) EPC=" + rFilt);
+            // 读 RESERVED（访问密码区）判断是否被读保护
+            String rRes = adp.readTagRaw(PWD, 0, 0, 2, "", 0, 0, 0);
+            Log.i(TAG, "WRITE_TEST(诊断): readTagRaw RESERVED=" + rRes);
             // 供电子下再试：重新开启盘点保持场强，立即读/写
             sdk.setInventoryMode(1);
             sdk.startInventory(new RfidSdk.InventoryCallback() {
