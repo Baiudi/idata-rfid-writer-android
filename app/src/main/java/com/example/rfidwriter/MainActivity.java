@@ -573,6 +573,17 @@ public class MainActivity extends AppCompatActivity {
                 boolean match = rStr.startsWith(testStr);
                 Log.i(TAG, "WRITE_TEST: 强制回读 hex=" + rHex + "  回读utf8=" + rStr + "  校验通过=" + match);
             }
+            // 控制实验：往 EPC 区(bank1,word2)写同一测试串，验证写机制在可达 bank 上是否工作
+            // （生产路径正是把资产编号写入 EPC 区；此写入会改写测试标签 EPC，属预期行为）
+            String epcTest = testStr.length() > 12 ? testStr.substring(0, 12) : testStr;
+            boolean epcOk = sdk.writeTagWithFilterSync(fBank, fStartBit, fLenBits, fData,
+                    1, 2, epcTest, PWD, WRITE_TIMEOUT_MS);
+            Log.i(TAG, "WRITE_TEST(控制): EPC区写入 ok=" + epcOk + " 测试串=" + epcTest);
+            if (epcOk) {
+                int ew = (epcTest.getBytes(StandardCharsets.UTF_8).length() + 1) / 2;
+                String eHex = sdk.readTagSync(1, 2, ew, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
+                Log.i(TAG, "WRITE_TEST(控制): EPC回读 hex=" + eHex);
+            }
         }).start();
     }
 
