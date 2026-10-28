@@ -479,8 +479,45 @@ public class MainActivity extends AppCompatActivity {
                 Log.i(TAG, String.format(java.util.Locale.US,
                         "READ_TEST raw bank=%d NOFILT          -> %s", bank, h3));
             }
+            // 3) 经 inventory 多 bank 读取探针：设置 inventoryTagBankSet 后盘点，dump 原始缓存看 TID/USER 是否随 EPC 返回
+            probeInventoryBank(adp, 1, 2, 8, "EPC-default");
+            probeInventoryBank(adp, 2, 0, 6, "TID");
+            probeInventoryBank(adp, 3, 0, 16, "USER");
+            // 4) FastID 探针：开启后盘点应一并回传 TID
+            adp.setFastIDRaw(true);
+            probeInventoryBank(adp, 1, 2, 8, "FASTID-on");
+            adp.setFastIDRaw(false);
+            // 5) filterSet 选中后 readTag 探针
+            adp.filterSetRaw(1, 0, epcLen, epc, 1);
+            String fs = adp.readTagRaw(PWD, 1, 2, 8, epc, 1, 32, epcLen * 4);
+            Log.i(TAG, "READ_TEST filterSet+readTag(1,2,8) -> " + fs);
+            adp.filterSetRaw(1, 0, 0, "", 0); // 清过滤
+            // 6) readModeSet 后 readTag 探针
+            adp.readModeSetRaw(1, 2, 8, 1);
+            String rm = adp.readTagRaw(PWD, 1, 2, 8, epc, 1, 32, epcLen * 4);
+            Log.i(TAG, "READ_TEST readModeSet+readTag(1,2,8) -> " + rm);
+            adp.setInventoryBankRaw(1, 2, 8); // 恢复 EPC 盘点
             Log.i(TAG, "READ_TEST: 探针结束 EPC=" + epc);
         }).start();
+    }
+
+    /** 诊断用：设置盘点返回的 bank 后做短盘点，dump 原始盘点缓存（含 TID/USER 时应在其中） */
+    private void probeInventoryBank(IdataUhfAdapter adp, int bank, int ptr, int cnt, String label) {
+        adp.setInventoryBankRaw(bank, ptr, cnt);
+        sdk.setInventoryMode(1);
+        sdk.startInventory(new RfidSdk.InventoryCallback() {
+            @Override public void onTag(TagInfo t) { }
+            @Override public void onEnd() { }
+        });
+        try { Thread.sleep(1500); } catch (InterruptedException ignored) { }
+        String[] raw = adp.readBufferRaw();
+        sdk.stopInventory();
+        sdk.setInventoryMode(0);
+        adp.setInventoryBankRaw(1, 2, 8); // 恢复默认 EPC 盘点
+        StringBuilder sb = new StringBuilder(label + " len=" + raw.length);
+        int shown = Math.min(raw.length, 30);
+        for (int i = 0; i < shown; i++) sb.append(" | ").append(raw[i]);
+        Log.i(TAG, "READ_TEST probeInventoryBank " + sb);
     }
 
     /** 把 Bundle 全部键值拼成可读字符串（供 READ_TEST 诊断） */

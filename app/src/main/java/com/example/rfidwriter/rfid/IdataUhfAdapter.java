@@ -717,4 +717,53 @@ public class IdataUhfAdapter implements RfidSdk {
         }
         return null;
     }
+
+    /** 诊断用：设置盘点返回的 bank（readTagModeSet 内部即 inventoryTagBankSet），flag 默认 true */
+    public boolean setInventoryBankRaw(int bank, int ptr, int cnt) {
+        try {
+            ensureSdk();
+            Object r = callIface("inventoryTagBankSet", bank, ptr, cnt, true);
+            Log.i(TAG, "setInventoryBankRaw bank=" + bank + " ptr=" + ptr + " cnt=" + cnt + " -> " + r);
+            return r instanceof Boolean && (Boolean) r;
+        } catch (Throwable e) { Log.w(TAG, "setInventoryBankRaw 异常", e); }
+        return false;
+    }
+
+    /** 诊断用：直接取盘点缓存原始数组（readTagFromBuffer） */
+    public String[] readBufferRaw() {
+        try {
+            ensureSdk();
+            Object o = callIface("readTagFromBuffer");
+            if (o instanceof String[]) return (String[]) o;
+            Log.w(TAG, "readBufferRaw 返回非 String[]: " + (o == null ? "null" : o.getClass().getName()));
+        } catch (Throwable e) { Log.w(TAG, "readBufferRaw 异常", e); }
+        return new String[0];
+    }
+
+    /** 诊断用：readTagModeSet(I,I,I,I) */
+    public boolean readModeSetRaw(int a, int b, int c, int d) {
+        try { ensureSdk(); Object r = callIface("readTagModeSet", a, b, c, d);
+              Log.i(TAG, "readModeSetRaw " + a + "," + b + "," + c + "," + d + " -> " + r);
+              return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "readModeSetRaw 异常", e); }
+        return false;
+    }
+
+    /** 诊断用：filterSet(I,I,I,String,I) -> inventoryFilterData（按 EPC/TID 选中单张） */
+    public boolean filterSetRaw(int bank, int ptr, int cnt, String data, int flag) {
+        try { ensureSdk(); Object r = callIface("filterSet", bank, ptr, cnt, data == null ? "" : data, flag);
+              Log.i(TAG, "filterSetRaw bank=" + bank + " ptr=" + ptr + " cnt=" + cnt + " flag=" + flag + " -> " + r);
+              return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "filterSetRaw 异常", e); }
+        return false;
+    }
+
+    /** 诊断用：setFastID（盘点时一并回传 TID） */
+    public boolean setFastIDRaw(boolean on) {
+        try { ensureSdk(); Object r = callIface("setFastID", on);
+              Log.i(TAG, "setFastIDRaw " + on + " -> " + r);
+              return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "setFastIDRaw 异常", e); }
+        return false;
+    }
 }
