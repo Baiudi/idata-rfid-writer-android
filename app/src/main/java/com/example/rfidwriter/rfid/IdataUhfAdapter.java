@@ -485,27 +485,40 @@ public class IdataUhfAdapter implements RfidSdk {
                     // 紧随其后的纯数字元素作为 RSSI 配对
                     java.util.LinkedHashMap<String, String> cur = new java.util.LinkedHashMap<>();
                     int parsedFail = 0;
-                    for (int i = 0; i < arr.length; i++) {
+                    // 模组群读缓存的真实排列是三元组 [EPC, TID/DATA, RSSI]（实测：
+                    // [0]=EPC(128b) [1]=TID(96b) [2]=-38 …），也可能退化为二元组 [EPC, RSSI]。
+                    // 旧逻辑只取 i±1 邻居，导致真实 EPC 的 RSSI（在 i+2）永远读不到，
+                    // 反而把 TID 误当成一张 EPC 上报（雷达据此做 EPC 过滤必然 0 命中）。
+                    // 改为按「结构」配对：EPC 之后若紧跟一段 hex(TID) 再跟数字 → RSSI 在 i+2 且跳过 TID；
+                    // 若紧跟数字 → RSSI 在 i+1。这样真实 EPC 拿到 RSSI，TID 不再污染盘点列表。
+                    int i = 0;
+                    while (i < arr.length) {
                         String raw = arr[i];
-                        if (raw == null) continue;
-                        String s = raw.trim();
-                        if (s.isEmpty()) continue;
-                        String epc = extractEpc(s);
-                        if (epc == null) { parsedFail++; continue; }
-                        if (!cur.containsKey(epc)) {
-                            // 模组缓存排列可能是 [EPC,RSSI] 也可能是 [RSSI,EPC]，
-                            // 只取后一个邻居会漏掉大半（实测同标签时而拿到 -30 时而为空），故双向取纯数字邻居
-                            String rssi = null;
-                            if (i + 1 < arr.length && arr[i + 1] != null) {
-                                String nxt = arr[i + 1].trim();
-                                if (nxt.matches("-?\\d+(\\.\\d+)?")) rssi = nxt;
+                        if (raw == null || raw.trim().isEmpty()) { i++; continue; }
+                        String epc = extractEpc(raw.trim());
+                        if (epc == null) { parsedFail++; i++; continue; }
+                        String rssi = null;
+                        int j = i + 1;
+                        if (j < arr.length && arr[j] != null) {
+                            String a = arr[j].trim();
+                            if (a.matches("-?\\d+(\\.\\d+)?")) {
+                                rssi = a;                       // [EPC, RSSI]
+                                if (!cur.containsKey(epc)) cur.put(epc, rssi);
+                                i = j + 1;
+                                continue;
+                            } else if (j + 1 < arr.length && arr[j + 1] != null) {
+                                String b = arr[j + 1].trim();
+                                if (b.matches("-?\\d+(\\.\\d+)?")) {
+                                    rssi = b;                   // [EPC, TID, RSSI]：跳过 TID
+                                    if (!cur.containsKey(epc)) cur.put(epc, rssi);
+                                    i = j + 2;
+                                    continue;
+                                }
                             }
-                            if (rssi == null && i > 0 && arr[i - 1] != null) {
-                                String prv = arr[i - 1].trim();
-                                if (prv.matches("-?\\d+(\\.\\d+)?")) rssi = prv;
-                            }
-                            cur.put(epc, rssi);
                         }
+                        // 没有数字邻居：EPC 单独出现（无 RSSI），仍上报但 rssi 留空
+                        if (!cur.containsKey(epc)) cur.put(epc, null);
+                        i++;
                     }
                     // 每 ~2s 清空一次去重集，使“再次读到同一标签”也能被重新计数
                     int forwarded = 0;
