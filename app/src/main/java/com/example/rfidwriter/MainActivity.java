@@ -434,6 +434,7 @@ public class MainActivity extends AppCompatActivity {
                     setStatus(msg2);
                     if (ok2) {
                         sdk.setPower(Math.min(getParam("power", 30), 20)); // 实测 30dBm 会让该模组读不到标签，上限 20dBm
+                        if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setEpcFilter("", 0, 0, false); // 清残留 SELECT 过滤
                         sdk.setInventoryMode(0);
                     }
                 })), 800);
@@ -443,6 +444,7 @@ public class MainActivity extends AppCompatActivity {
                 setStatus(msg);
                 if (ok) {
                     sdk.setPower(Math.min(getParam("power", 30), 20)); // 实测 30dBm 会让该模组读不到标签，上限 20dBm
+                    if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setEpcFilter("", 0, 0, false); // 清残留 SELECT 过滤
                     sdk.setInventoryMode(0);
                 }
             });
@@ -494,6 +496,7 @@ public class MainActivity extends AppCompatActivity {
             int[] levels = {0, 12, 16, 20, 26, 30}; // 0=不设功率(沿用模组当前状态)
             for (int p : levels) {
                 try {
+                    if (adp != null) adp.setEpcFilter("", 0, 0, false); // 清残留 SELECT 过滤
                     sdk.setInventoryMode(1);
                     if (p > 0) sdk.setPower(p);
                     int actual = adp.powerGetRaw();
@@ -582,6 +585,9 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
             Log.i(TAG, "PURE_TEST: 开始（不调 setPower / 不过滤）powerGet=" + (adp != null ? adp.powerGetRaw() : -999));
+            // 关键：先清掉模组里可能残留的 SELECT(EPC) 过滤（部分 iData 模组把过滤写入 NVRAM，重启都清不掉，
+            // 会导致「不过滤」的盘点只回传被过滤的 EPC，把其它标签全滤掉 → 表现为盘点 0 读）。
+            if (adp != null) { boolean clr = adp.setEpcFilter("", 0, 0, false); Log.i(TAG, "PURE_TEST: 清残留过滤 ret=" + clr); }
             sdk.setInventoryMode(1);
             java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
             java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
@@ -1406,6 +1412,7 @@ public class MainActivity extends AppCompatActivity {
         if (tvInvCount != null) tvInvCount.setText("0 个");
         if (tvLastEpc != null) tvLastEpc.setText("—");
         inventorying = true;
+        if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setEpcFilter("", 0, 0, false); // 清残留 SELECT 过滤（NVRAM 残留会滤掉其它标签）
         sdk.setInventoryMode(1);          // 多标签盘点模式
         sdk.startInventory(makeInventoryCallback());
         showInventoryDialog();
