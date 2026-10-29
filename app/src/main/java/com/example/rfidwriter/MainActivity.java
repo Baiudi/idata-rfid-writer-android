@@ -646,7 +646,7 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             Log.i(TAG, "PURE_TEST_MIN: 默认 freqMode=" + (adp != null ? adp.getFreqMode() : -1)
                     + " session=" + (adp != null ? adp.getSessionMode() : -1)
-                    + " powerGet=" + (adp != null ? adp.powerGet() : -1));
+                    + " powerGet=" + (adp != null ? adp.powerGetRaw() : -1));
             // 阶段A：完全不改 freq/session，仅 setPower + inventoryMode(1) + 盘点 3s
             sdk.setPower(Math.min(getParam("power", 30), 20));
             sdk.setInventoryMode(1);
