@@ -1418,6 +1418,12 @@ public class MainActivity extends AppCompatActivity {
         sdk.setInventoryMode(1);
         final float txPower = getParam("power", 30); // 定位用高功率，读得远
         sdk.setPower((int) txPower);
+        // 开启 EPC 过滤（SELECT）：该模组群读缓冲区只保留「最近读到的约 2 张」，
+        // 多标签场景下目标标签常不在窗口内（实测盘点可见 4 张、定位缓存却是另外 2 张），
+        // 开启过滤后缓冲区只会有目标标签，雷达才能稳定命中。
+        if (sdk instanceof IdataUhfAdapter) {
+            ((IdataUhfAdapter) sdk).setEpcFilter(epc, epc.length() * 4, true);
+        }
 
         float density = getResources().getDisplayMetrics().density;
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
@@ -1469,6 +1475,10 @@ public class MainActivity extends AppCompatActivity {
             sdk.setLedBlink(false);
             sdk.stopInventory();
             sdk.setInventoryMode(0);
+            // 关闭 EPC 过滤，否则后续盘点/读写会被过滤成「只有刚才那一张」
+            if (sdk instanceof IdataUhfAdapter) {
+                ((IdataUhfAdapter) sdk).setEpcFilter("", 0, false);
+            }
             // 定位是由盘点发起的：关闭后自动回到盘点会话继续（保留统计、累加读取）
             if (locateFromInventory) {
                 locateFromInventory = false;

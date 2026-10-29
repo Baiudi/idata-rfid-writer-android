@@ -414,6 +414,46 @@ public class IdataUhfAdapter implements RfidSdk {
         } catch (Throwable ignore) { /* best effort */ }
     }
 
+    /**
+     * 设置 EPC 过滤（SELECT）：开启后模组只回传匹配该 EPC 的标签。
+     * 该模组群读缓冲区只保留「最近读到的约 2 张」，多标签场景下目标标签常不在窗口内
+     * （实测盘点能看到 4 张，定位时缓存里却是另外 2 张），导致雷达定位抓不到目标。
+     * 开启过滤后缓冲区内只会有目标标签，定位即可稳定命中。
+     *
+     * @param epcHex  目标 EPC 的 hex 串（关闭时传 ""）
+     * @param lenBits EPC 位长（= hex 字符数 * 4）
+     * @param on      true 开启过滤 / false 关闭
+     */
+    public boolean setEpcFilter(String epcHex, int lenBits, boolean on) {
+        if (!mConnected.get()) return false;
+        // UHFInterface.filterSet(int bank,int startBit,int lenBits,String data,int on)
+        try {
+            Object r = callIface("filterSet", 1, 32, lenBits, epcHex, on ? 1 : 0);
+            boolean ret = r instanceof Boolean ? (Boolean) r : (r != null);
+            Log.i(TAG, "setEpcFilter(iface): epc=" + epcHex + " lenBits=" + lenBits
+                    + " on=" + on + " ret=" + ret);
+            return ret;
+        } catch (Throwable e) {
+            Log.w(TAG, "setEpcFilter iface 路径失败（末参 int），回退 UHFManager（末参 boolean）", e);
+        }
+        // 回退：UHFManager.filterSet(int,int,int,String,boolean)
+        try {
+            Object raw = mRawManager;
+            if (raw == null) return false;
+            for (java.lang.reflect.Method m : raw.getClass().getMethods()) {
+                if (!m.getName().equals("filterSet") || m.getParameterTypes().length != 5) continue;
+                if (m.getParameterTypes()[4] != boolean.class) continue;
+                Object r = m.invoke(raw, 1, 32, lenBits, epcHex, on);
+                boolean ret = r instanceof Boolean ? (Boolean) r : (r != null);
+                Log.i(TAG, "setEpcFilter(mgr): epc=" + epcHex + " on=" + on + " ret=" + ret);
+                return ret;
+            }
+        } catch (Throwable e) {
+            Log.w(TAG, "setEpcFilter 全部路径失败", e);
+        }
+        return false;
+    }
+
     @Override
     public void startInventory(InventoryCallback cb) {
         if (!mConnected.get() || cb == null) return;
