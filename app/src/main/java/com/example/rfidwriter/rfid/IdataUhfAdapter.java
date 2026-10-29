@@ -367,22 +367,17 @@ public class IdataUhfAdapter implements RfidSdk {
             String msg;
             try {
                 ensureSdk();
+                // 【选项3·规避切电】不再调用 resetDefaultSetting（它会关射频载波，触发 SELinux ioctl 拒绝 +
+                // libModuleAPIJni SIGSEGV，模组掉电、下次盘点 0 读）。改为：上电(revive) + 无切电的寄存器复位。
                 Object r = callIface("powerOn");
                 ok = r instanceof Boolean && (Boolean) r;
-                Log.i(TAG, "init: powerOn=" + ok + " moduleType=" + mModuleType + " bindPath=" + mBindPath);
-                // 关键修复：iData 模组把 SELECT 过滤/会话/盘存算法等状态持久化在固件里，
-                // 本 App 之前做定位/读写设过的 EPC 过滤会残留，导致「不过滤盘点」永远 0 读；
-                // resetDefaultSetting() 恢复到出厂默认（清掉一切残留），与 iUHF 每次启动能读到一致。
-                try {
-                    resetModule();
-                    Log.i(TAG, "init: resetDefaultSetting 已调用，已清掉残留 SELECT/会话/算法");
-                } catch (Throwable e2) {
-                    Log.w(TAG, "init: resetDefaultSetting 失败（忽略，继续）", e2);
-                }
-                // reset 可能把上电状态也复位，确保仍上电
-                try { callIface("powerOn"); } catch (Throwable ignore) { /* best effort */ }
-                msg = ok ? ("UHF 已连接（绑定路径：" + mBindPath + "）")
-                        : "UHF 初始化失败（powerOn 返回 false，请确认设备 UHF 模块正常）";
+                Log.i(TAG, "init[AvoidPowerToggle]: powerOn=" + ok + " moduleType=" + mModuleType + " bindPath=" + mBindPath);
+                // 清残留 SELECT 过滤 + 切到 S0 会话（标签离场即复位，规避会话静默），均为寄存器写、不切电。
+                try { clearSelect(); } catch (Throwable e2) { Log.w(TAG, "init: clearSelect 失败（忽略）", e2); }
+                try { setSession(0); } catch (Throwable e2) { Log.w(TAG, "init: setSession(0) 失败（忽略）", e2); }
+                Log.i(TAG, "init[AvoidPowerToggle]: 已 clearSelect + setSession(0)（未做 resetDefaultSetting，规避切电）");
+                msg = ok ? ("UHF 已连接（规避切电模式，绑定路径：" + mBindPath + "）")
+                        : "UHF 初始化：powerOn 返回 false（请确认设备 UHF 模块正常/已上电）";
             } catch (Throwable e) {
                 msg = "UHF 初始化异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
                 Log.e(TAG, "init failed", e);
@@ -396,13 +391,10 @@ public class IdataUhfAdapter implements RfidSdk {
 
     @Override
     public void release() {
+        // 【选项3·规避切电】不再调用 stopInventory / powerOff（关电会被 SELinux 拒绝并致 native 崩溃、模组掉电）。
+        // 仅停止轮询并标记断开；模组保持上电，下次 init 的 powerOn 可复用/恢复。
         mPolling.set(false);
-        try {
-            if (mIface != null || mUhf != null) {
-                callIface("stopInventory");
-                callIface("powerOff");
-            }
-        } catch (Throwable ignore) { /* best effort */ }
+        Log.i(TAG, "release[AvoidPowerToggle]: 已停止轮询并断开（未掉电，规避切电崩溃）");
         mConnected.set(false);
     }
 
@@ -534,39 +526,15 @@ public class IdataUhfAdapter implements RfidSdk {
      * 一处修复即可同时覆盖 init() / startInventorySession() / doPureTest() 三条路径。
      */
     public void resetModule() throws Exception {
-        boolean did = false;
-        // 【实验开关】DO_RESET=false 时跳过真正的 resetDefaultSetting，仅重新上电——用于验证
-        // 「resetDefaultSetting 是否把射频输出关死、powerOn 无法恢复」这一假设。
-        final boolean DO_RESET = true;
-        if (DO_RESET && mRawManager != null) {
-            for (java.lang.reflect.Method m : mRawManager.getClass().getMethods()) {
-                if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
-                    m.invoke(mRawManager);
-                    Log.i(TAG, "resetModule: 已对 mRawManager 调用 resetDefaultSetting");
-                    did = true;
-                    break;
-                }
-            }
-        }
-        if (!did && DO_RESET && mUhf != null) {
-            for (java.lang.reflect.Method m : mUhfClass.getMethods()) {
-                if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
-                    m.invoke(mUhf);
-                    Log.i(TAG, "resetModule: 已对 mUhf 调用 resetDefaultSetting");
-                    did = true;
-                    break;
-                }
-            }
-        }
-        if (!did && DO_RESET) throw new NoSuchMethodException("resetDefaultSetting");
-        if (!DO_RESET) Log.i(TAG, "resetModule: 【实验】跳过 resetDefaultSetting，仅重新上电");
-        // 复位后射频载波被关闭，必须重新上电，否则模组断电、盘点 0 读。
+        // 【选项3·规避切电】不再调用 resetDefaultSetting（会关射频载波，触发 SELinux ioctl 拒绝 + 后续崩溃）。
+        // 改为无切电的等效复位：清 SELECT 过滤 + 切 S0 会话 + 确保上电。
+        clearSelect();
+        try { setSession(0); } catch (Throwable ignore) {}
         try {
             Object r = callIface("powerOn");
-            Log.i(TAG, "resetModule: 复位后重新 powerOn ret=" + r);
-        } catch (Throwable e) {
-            Log.w(TAG, "resetModule: 复位后 powerOn 失败（忽略）", e);
-        }
+            Log.i(TAG, "resetModule[AvoidPowerToggle]: 确保上电 ret=" + r);
+        } catch (Throwable ignore) {}
+        Log.i(TAG, "resetModule[AvoidPowerToggle]: 已软复位（clearSelect + setSession(0) + powerOn），未做 resetDefaultSetting");
     }
 
     /**
@@ -788,13 +756,12 @@ public class IdataUhfAdapter implements RfidSdk {
 
     @Override
     public void stopInventory() {
-        Log.i(TAG, "stopInventory 调用（mPolling " + mPolling.get() + " -> false）",
-                new Throwable("stop来源"));
+        // 【选项3·规避切电】关键修复：不再调用 SDK stopInventory()。其内部关 UHF 电源会被 SELinux 拒绝
+        // 并触发 libModuleAPIJni.so SIGSEGV，导致系统服务崩溃、模组掉电、后续盘点 0 读。
+        // 改为“软停止”：停止向业务层转发标签、退出轮询线程，但模组保持连续读、不上电切电，
+        // 下次 startInventory 直接恢复转发即可。模组持续发射仅多耗电，对读数无副作用。
         mPolling.set(false);
-        if (mIface == null && mUhf == null) return;
-        try {
-            callIface("stopInventory");
-        } catch (Throwable ignore) { /* best effort */ }
+        Log.i(TAG, "stopInventory[AvoidPowerToggle]: 软停止（不调用 SDK stopInventory，规避切电崩溃）");
     }
 
     @Override
