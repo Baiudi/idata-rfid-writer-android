@@ -441,7 +441,7 @@ public class IdataUhfAdapter implements RfidSdk {
         boolean did = false;
         // 【实验开关】DO_RESET=false 时跳过真正的 resetDefaultSetting，仅重新上电——用于验证
         // 「resetDefaultSetting 是否把射频输出关死、powerOn 无法恢复」这一假设。
-        final boolean DO_RESET = false;
+        final boolean DO_RESET = true;
         if (DO_RESET && mRawManager != null) {
             for (java.lang.reflect.Method m : mRawManager.getClass().getMethods()) {
                 if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
