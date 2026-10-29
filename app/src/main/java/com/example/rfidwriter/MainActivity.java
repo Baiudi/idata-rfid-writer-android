@@ -85,6 +85,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_WRITE_TEST = "com.example.rfidwriter.action.WRITE_TEST";
     /** 远程定位自检钩子：am broadcast -a ...LOCATE_TEST 触发「对比连续盘点 mode=0 / mode=1 是否回传标签及 RSSI」，日志前缀 LOCATE_TEST */
     public static final String ACTION_LOCATE_TEST = "com.example.rfidwriter.action.LOCATE_TEST";
+    /** 远程「纯净」自检钩子：全程不调用 setPower（怀疑 setPower 内部关电源被 SELinux 拒绝会让模组状态错乱），日志前缀 PURE_TEST */
+    public static final String ACTION_PURE_TEST = "com.example.rfidwriter.action.PURE_TEST";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -148,6 +150,7 @@ public class MainActivity extends AppCompatActivity {
                 else if (ACTION_READ_TEST.equals(a)) runReadTest();
                 else if (ACTION_WRITE_TEST.equals(a)) runWriteTest();
                 else if (ACTION_LOCATE_TEST.equals(a)) runLocateTest();
+                else if (ACTION_PURE_TEST.equals(a)) runPureTest();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
@@ -155,6 +158,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_READ_TEST);
         testFilter.addAction(ACTION_WRITE_TEST);
         testFilter.addAction(ACTION_LOCATE_TEST);
+        testFilter.addAction(ACTION_PURE_TEST);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -455,6 +459,46 @@ public class MainActivity extends AppCompatActivity {
     private void runLocateTest() {
         if (sdk.isConnected()) doLocateTest();
         else { Log.i(TAG, "LOCATE_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doLocateTest(), 3000); }
+    }
+
+    private void runPureTest() {
+        if (sdk.isConnected()) doPureTest();
+        else { Log.i(TAG, "PURE_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPureTest(), 3000); }
+    }
+
+    /**
+     * 「纯净」自检：全程不调用 setPower / setEpcFilter，只做 mode=1 + startInventory 读 3s。
+     * 动机：日志显示 stopInventory（关 UHF 电源）被 SELinux Enforcing 拒绝
+     * （avc: denied { ioctl } path="/proc/driver/uhf_power_enable" permissive=0），
+     * 怀疑 setPower 内部「先关后开」时关不掉，会把模组状态搞乱 → 表现为盘不到任何标签。
+     * 本钩子用于验证：不碰电源时能否正常读到标签。
+     */
+    private void doPureTest() {
+        if (!sdk.isConnected()) { Log.w(TAG, "PURE_TEST: 仍未连接 UHF，跳过"); return; }
+        new Thread(() -> {
+            final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
+            Log.i(TAG, "PURE_TEST: 开始（不调 setPower / 不过滤）powerGet=" + (adp != null ? adp.powerGetRaw() : -999));
+            sdk.setInventoryMode(1);
+            java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
+            java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
+            sdk.startInventory(new RfidSdk.InventoryCallback() {
+                @Override public void onTag(TagInfo t) {
+                    if (t.epc != null && !t.epc.isEmpty()) cnt.merge(t.epc, 1, Integer::sum);
+                }
+                @Override public void onEnd() { l.countDown(); }
+            });
+            try { l.await(3000, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+            sdk.stopInventory();
+            sdk.setInventoryMode(0);
+            if (cnt.isEmpty()) {
+                Log.i(TAG, "PURE_TEST: 3s 内读到 0 张标签（天线场内无标签，或射频未工作）");
+            } else {
+                for (java.util.Map.Entry<String, Integer> e : cnt.entrySet()) {
+                    Log.i(TAG, "PURE_TEST: 标签 " + e.getKey() + " 次数=" + e.getValue());
+                }
+                Log.i(TAG, "PURE_TEST: 共 " + cnt.size() + " 张唯一标签");
+            }
+        }).start();
     }
 
     /**
