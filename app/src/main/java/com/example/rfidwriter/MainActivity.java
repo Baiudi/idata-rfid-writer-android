@@ -57,6 +57,8 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_PICK_CSV = 1001;
     private static final int REQ_PICK_LEDGER = 1002;
     private String PWD = "00000000";                       // 访问密码(hex)，设置页可配置；标签被锁时填入真实密码
+    /** 模组只回传 EPC、不回传 RSSI 数值时，雷达定位使用的兜底信号强度（dBm，中等距离） */
+    private static final float RSSI_FALLBACK = -65f;
     private static final long INVENTORY_WINDOW_MS = 3000;  // 单标签检测窗口（拉长，确保首张标签稳定出现）
     private static final long WRITE_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 3000;
@@ -1358,7 +1360,9 @@ public class MainActivity extends AppCompatActivity {
         if (inventorying && !locateFromInventory) endInventory();
 
         locating = true;
-        sdk.setInventoryMode(0);
+        // 定位依赖连续盘点回传 RSSI：必须用 mode=1（flag=true）开启连续盘点模式。
+        // 此前这里误用 mode=0（flag=false），模块不回传标签 → 雷达恒显示「未捕捉到目标标签」。
+        sdk.setInventoryMode(1);
         final float txPower = getParam("power", 30); // 定位用高功率，读得远
         sdk.setPower((int) txPower);
 
@@ -1399,9 +1403,12 @@ public class MainActivity extends AppCompatActivity {
         root.addView(chkLed);
         root.addView(btnStop);
 
+        // 小屏手持机上内容较多（雷达 300dp + 文本 + 开关 + 按钮），包一层滚动容器防止雷达被挤出可视区
+        android.widget.ScrollView sv = new android.widget.ScrollView(this);
+        sv.addView(root);
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
                 .setTitle("标签定位")
-                .setView(root)
+                .setView(sv)
                 .setNegativeButton("关闭", null)
                 .create();
         d.setOnDismissListener(di -> {
@@ -1422,27 +1429,45 @@ public class MainActivity extends AppCompatActivity {
         });
         d.show();
 
+        // 采样窗口内最强 RSSI；-120 表示本窗口未读到目标
+        final float[] best = {-120f};
+        // 本窗口是否读到目标标签（与是否有 RSSI 数值分开：部分模组只回 EPC 不回 RSSI）
+        final boolean[] matched = {false};
+        Log.i(TAG, "LOCATE: 开启连续盘点定位 目标EPC=" + epc + " 功率=" + (int) txPower + "dBm");
+
+        // 连续盘点常开：模块每回传一次就刷新 best，避免每轮 start/stop 造成丢数据
+        sdk.startInventory(new RfidSdk.InventoryCallback() {
+            @Override public void onTag(TagInfo t) {
+                if (t != null && epc.equals(t.epc)) {
+                    matched[0] = true;
+                    float r = parseRssi(t.rssi);
+                    if (r > best[0]) best[0] = r;
+                }
+            }
+            @Override public void onEnd() { }
+        });
+
         new Thread(() -> {
+            int round = 0;
             while (locating) {
-                final float[] best = {-120f};
-                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-                sdk.startInventory(new RfidSdk.InventoryCallback() {
-                    @Override public void onTag(TagInfo t) {
-                        if (epc.equals(t.epc)) {
-                            float r = parseRssi(t.rssi);
-                            if (r > best[0]) best[0] = r;
-                        }
-                    }
-                    @Override public void onEnd() { latch.countDown(); }
-                });
-                try { latch.await(400, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
-                sdk.stopInventory();
+                // 取本窗口最强值后清空，使设备远离时能及时反映为「未捕捉」
                 final float rssi = best[0];
+                final boolean hit = matched[0];
+                best[0] = -120f;
+                matched[0] = false;
+                if ((++round % 5) == 1) {
+                    Log.i(TAG, "LOCATE: 窗口#" + round + " 命中=" + hit + " rssi=" + rssi);
+                }
                 runOnUiThread(() -> {
                     if (!locating) return;
-                    if (rssi <= -120) {
-                        radar.setRssiDbm(rssi, Float.NaN);
+                    if (!hit) {
+                        radar.setRssiDbm(-120f, Float.NaN);
                         tvRssi.setText("信号值：未捕捉到目标标签（请移动设备靠近）");
+                        tvDist.setText("估算距离：--");
+                    } else if (rssi <= -120f) {
+                        // 读到了目标，但模组未回传 RSSI 数值：给个中值，保证雷达上能看到目标
+                        radar.setRssiDbm(RSSI_FALLBACK, Float.NaN);
+                        tvRssi.setText("信号值：已锁定目标（模组未回传 RSSI 数值）");
                         tvDist.setText("估算距离：--");
                     } else {
                         float dist = FormatUtil.estimateDistanceMeters(rssi, txPower);
@@ -1453,7 +1478,7 @@ public class MainActivity extends AppCompatActivity {
                         tvDist.setText("估算距离：" + FormatUtil.formatDistance(dist));
                     }
                 });
-                try { Thread.sleep(80); } catch (InterruptedException e) { break; }
+                try { Thread.sleep(400); } catch (InterruptedException e) { break; }
             }
         }).start();
     }
