@@ -89,6 +89,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_PURE_TEST = "com.example.rfidwriter.action.PURE_TEST";
     /** 远程电源自检钩子：验证「stopInventory 关电源被 SELinux 拒绝 → 模组坏掉(powerGet=-1)」，以及 powerOn() 能否恢复 */
     public static final String ACTION_POWER_TEST = "com.example.rfidwriter.action.POWER_TEST";
+    /** 功率扫描钩子：逐级试功率(0/12/16/20/26/30dBm)并各盘 2.5s，确认「昨天能读的小标签」在哪个功率档能被读到 */
+    public static final String ACTION_POWER_SWEEP = "com.example.rfidwriter.action.POWER_SWEEP";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -154,6 +156,7 @@ public class MainActivity extends AppCompatActivity {
                 else if (ACTION_LOCATE_TEST.equals(a)) runLocateTest();
                 else if (ACTION_PURE_TEST.equals(a)) runPureTest();
                 else if (ACTION_POWER_TEST.equals(a)) runPowerTest();
+                else if (ACTION_POWER_SWEEP.equals(a)) runPowerSweep();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
@@ -163,6 +166,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_LOCATE_TEST);
         testFilter.addAction(ACTION_PURE_TEST);
         testFilter.addAction(ACTION_POWER_TEST);
+        testFilter.addAction(ACTION_POWER_SWEEP);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -473,6 +477,45 @@ public class MainActivity extends AppCompatActivity {
     private void runPowerTest() {
         if (sdk.isConnected()) doPowerTest();
         else { Log.i(TAG, "POWER_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPowerTest(), 3000); }
+    }
+
+    private void runPowerSweep() {
+        if (sdk.isConnected()) doPowerSweep();
+        else { Log.i(TAG, "POWER_SWEEP: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPowerSweep(), 3000); }
+    }
+
+    /** 功率扫描：逐级设置功率并各盘 2.5s，记录每档读到的唯一 EPC 数。
+     *  用于定位「昨天能读的小标签今天读不到」是否由功率上限(20dBm)过低导致。
+     *  注意：p=30 若令模组掉电(powerGet<0)会立即停止并建议重启。 */
+    private void doPowerSweep() {
+        if (!(sdk instanceof IdataUhfAdapter)) { Log.w(TAG, "POWER_SWEEP: sdk 非 IdataUhfAdapter，跳过"); return; }
+        final IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
+        new Thread(() -> {
+            int[] levels = {0, 12, 16, 20, 26, 30}; // 0=不设功率(沿用模组当前状态)
+            for (int p : levels) {
+                try {
+                    sdk.setInventoryMode(1);
+                    if (p > 0) sdk.setPower(p);
+                    int actual = adp.powerGetRaw();
+                    java.util.Set<String> seen = java.util.Collections.newSetFromMap(
+                            new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+                    java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+                    sdk.startInventory(new RfidSdk.InventoryCallback() {
+                        @Override public void onTag(TagInfo t) { if (t.epc != null && !t.epc.isEmpty()) seen.add(t.epc); }
+                        @Override public void onEnd() { latch.countDown(); }
+                    });
+                    try { latch.await(2500, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                    sdk.stopInventory();
+                    Log.i(TAG, "POWER_SWEEP: p=" + p + " 实际powerGet=" + actual
+                            + " 唯一EPC=" + seen.size() + " 样例=" + (seen.isEmpty() ? "无" : seen.toString()));
+                    if (actual < 0) { Log.w(TAG, "POWER_SWEEP: powerGet<0，模组疑似掉电，停止扫描（建议重启设备）"); break; }
+                } catch (Throwable e) {
+                    Log.e(TAG, "POWER_SWEEP: 级别 p=" + p + " 异常", e);
+                }
+            }
+            sdk.setInventoryMode(0);
+            Log.i(TAG, "POWER_SWEEP: 结束");
+        }).start();
     }
 
     /**
