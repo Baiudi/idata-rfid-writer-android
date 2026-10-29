@@ -1431,8 +1431,14 @@ public class MainActivity extends AppCompatActivity {
         // 盘点前彻底复位模组（清掉定位/读写残留的 SELECT 过滤、会话、盘存算法），
         // 与 iUHF 每次启动都能读到标签的行为一致；reset 会把功率复位，故随后重新设回 20dBm。
         if (sdk instanceof IdataUhfAdapter) {
-            try { ((IdataUhfAdapter) sdk).resetModule(); }
+            IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
+            try { adp.resetModule(); }   // 复位清残留；resetModule 内部已重新 powerOn 开启射频载波
             catch (Throwable e) { Log.w(TAG, "startInventory: resetModule 失败（忽略，继续）", e); }
+            // 固化与 iUHF 一致的正确初始化序列：
+            // freqMode=1 = 中国 920~925MHz 频段；session=0 让被其它 App/上一次盘点静默在 S1~S3 的标签重新回应。
+            try { adp.setFreqMode(1); } catch (Throwable ignore) {}
+            try { adp.setSession(0); }  catch (Throwable ignore) {}
+            adp.clearSelect();           // 确保无残留 EPC 过滤
         }
         sdk.setPower(Math.min(getParam("power", 30), 20));
         sdk.setInventoryMode(1);          // 多标签盘点模式

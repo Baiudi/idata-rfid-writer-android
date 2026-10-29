@@ -431,28 +431,42 @@ public class IdataUhfAdapter implements RfidSdk {
      * 普通 filterSet(...,on=false) 往往清不掉残留的 SELECT —— 导致后续「不过滤盘点」仍被旧的
      * EPC 过滤挡成 0 读（本 App 做定位/读写时设过 SELECT，最易踩坑）。
      * resetDefaultSetting() 一次性清掉所有残留，与 iUHF 每次启动都能读到标签的行为一致。
-     * 注意：resetDefaultSetting 可能把功率/频率也复位，调用方需在其后重新 setPower / setInventoryMode。
+     *
+     * 关键：resetDefaultSetting() 会把射频载波（上电状态）一并关掉，模组回到断电态，
+     * 若调用方随后只 setPower（仅设功率等级、不开载波）就盘点，模组根本不发射 → 0 读。
+     * 这正是「iUHF 能读、本 App 盘点读不到」的根因。因此这里复位后【必然重新 powerOn】，
+     * 一处修复即可同时覆盖 init() / startInventorySession() / doPureTest() 三条路径。
      */
     public void resetModule() throws Exception {
+        boolean did = false;
         if (mRawManager != null) {
             for (java.lang.reflect.Method m : mRawManager.getClass().getMethods()) {
                 if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
                     m.invoke(mRawManager);
                     Log.i(TAG, "resetModule: 已对 mRawManager 调用 resetDefaultSetting");
-                    return;
+                    did = true;
+                    break;
                 }
             }
         }
-        if (mUhf != null) {
+        if (!did && mUhf != null) {
             for (java.lang.reflect.Method m : mUhfClass.getMethods()) {
                 if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
                     m.invoke(mUhf);
                     Log.i(TAG, "resetModule: 已对 mUhf 调用 resetDefaultSetting");
-                    return;
+                    did = true;
+                    break;
                 }
             }
         }
-        throw new NoSuchMethodException("resetDefaultSetting");
+        if (!did) throw new NoSuchMethodException("resetDefaultSetting");
+        // 复位后射频载波被关闭，必须重新上电，否则模组断电、盘点 0 读。
+        try {
+            Object r = callIface("powerOn");
+            Log.i(TAG, "resetModule: 复位后重新 powerOn ret=" + r);
+        } catch (Throwable e) {
+            Log.w(TAG, "resetModule: 复位后 powerOn 失败（忽略）", e);
+        }
     }
 
     /**
