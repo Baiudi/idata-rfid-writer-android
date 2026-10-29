@@ -95,6 +95,9 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_PURE_TEST_MIN = "com.example.rfidwriter.action.PURE_TEST_MIN";
     /** 配置穷举自检：不改默认配置，先 dump 全部模块/协议参数，再逐个参数扫描，找出 iUHF 能读而本 App 读不到的差异配置 */
     public static final String ACTION_DIAG_SWEEP = "com.example.rfidwriter.action.DIAG_SWEEP";
+    /** 模块切换自检：iUHF 真实 UHF 模组为 MODULE_* 之一（非默认的 MODOULE_SIM7100 蜂窝模块）；
+     *  逐个 setBaseModuleType/setCacheUHFModule 切换并盘点，定位能读的那颗模组 */
+    public static final String ACTION_MODULE_SWEEP = "com.example.rfidwriter.action.MODULE_SWEEP";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -117,6 +120,7 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean locating = false;
     private volatile boolean reading = false;       // 读取中（防止手柄连按并发读取）
     private int mDiagStep = 0;                       // DIAG_SWEEP 步骤计数
+    private String lastEpc = "";                     // 最近一次读到的 EPC（模块扫描命中时记录）
     private boolean locateFromInventory = false;   // 本次定位是否由盘点弹窗发起（关闭后自动回盘点）
 
     // ----------------- 手柄按键（设备扳机/扫描键）映射 -----------------
@@ -164,6 +168,7 @@ public class MainActivity extends AppCompatActivity {
                 else if (ACTION_POWER_SWEEP.equals(a)) runPowerSweep();
                 else if (ACTION_PURE_TEST_MIN.equals(a)) runPureTestMin();
                 else if (ACTION_DIAG_SWEEP.equals(a)) runDiagSweep();
+                else if (ACTION_MODULE_SWEEP.equals(a)) runModuleSweep();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
@@ -176,6 +181,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_POWER_SWEEP);
         testFilter.addAction(ACTION_PURE_TEST_MIN);
         testFilter.addAction(ACTION_DIAG_SWEEP);
+        testFilter.addAction(ACTION_MODULE_SWEEP);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -772,6 +778,57 @@ public class MainActivity extends AppCompatActivity {
             }
             Log.i(TAG, "DIAG_SWEEP: 结束（哪个档有读数，即 iUHF 工作配置）");
         }).start();
+    }
+
+    private void runModuleSweep() {
+        if (sdk.isConnected()) doModuleSweep();
+        else { Log.i(TAG, "MODULE_SWEEP: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doModuleSweep(), 3000); }
+    }
+
+    /** 模块切换自检：iUHF 的 UHF 模组为 MODULE_* 之一，本 App 默认被绑到 MODOULE_SIM7100(蜂窝模块，无 RFID 天线)→0 读。
+     *  逐个 setBaseModuleType+setCacheUHFModule 切换并盘点 3s，定位能读到标签的那颗模组。 */
+    private void doModuleSweep() {
+        if (!(sdk instanceof IdataUhfAdapter)) { Log.w(TAG, "MODULE_SWEEP: sdk 非 IdataUhfAdapter，跳过"); return; }
+        final IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
+        new Thread(() -> {
+            String[] mods = {"MODOULE_SIM7100", "MODOULE_GX", "MODOULE_SLR1200",
+                    "MODOULE_SLR5100", "MODOULE_UM2", "MODOULE_UM4"};
+            for (String s : mods) {
+                try { adp.setBaseModuleType(s); } catch (Throwable e) { Log.w(TAG, "MODULE_SWEEP: setBaseModuleType(" + s + ") 异常", e); }
+                try { adp.setCacheUHFModule(s); } catch (Throwable ignore) {}
+                String cur = adp.getUHFModuleType();
+                Log.i(TAG, "MODULE_SWEEP: 已切 setBaseModuleType=" + s + " 当前 getUHFModuleType=" + cur);
+                try { adp.powerOnRaw(); } catch (Throwable ignore) {}
+                try { adp.setFreqMode(1); } catch (Throwable ignore) {}
+                try { adp.setSession(0); } catch (Throwable ignore) {}
+                sdk.setPower(20);
+                sdk.setInventoryMode(1);
+                int n = invModuleStep();
+                Log.i(TAG, "MODULE_SWEEP: [" + s + "] 唯一EPC=" + n + (n > 0 ? " EPC=" + lastEpc : " (0读)"));
+                if (n > 0) Log.i(TAG, "MODULE_SWEEP: *** 命中模组 " + s + "，可固化进连接/盘点主路径 ***");
+            }
+            Log.i(TAG, "MODULE_SWEEP: 结束");
+        }).start();
+    }
+
+    /** 模块扫描：盘 3s 返回唯一 EPC 数（容忍 startInventory 抛异常） */
+    private int invModuleStep() {
+        java.util.Set<String> seen = java.util.Collections.newSetFromMap(
+                new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+        try {
+            java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            sdk.startInventory(new RfidSdk.InventoryCallback() {
+                @Override public void onTag(TagInfo t) { if (t.epc != null && !t.epc.isEmpty()) seen.add(t.epc); }
+                @Override public void onEnd() { latch.countDown(); }
+            });
+            try { latch.await(3000, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+        } catch (Throwable e) {
+            Log.w(TAG, "MODULE_SWEEP: invModuleStep startInventory 异常", e);
+        } finally {
+            try { sdk.stopInventory(); } catch (Throwable ignore) {}
+        }
+        if (!seen.isEmpty()) lastEpc = seen.iterator().next();
+        return seen.size();
     }
 
     /**

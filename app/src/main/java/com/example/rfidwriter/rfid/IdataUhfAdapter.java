@@ -488,6 +488,7 @@ public class IdataUhfAdapter implements RfidSdk {
     public String getUHFModuleType() { return getStr("getUHFModuleType"); }
     public String getCacheUHFModule() { return getStr("getCacheUHFModule"); }
     public void setCacheUHFModule(String s) { setVoid("setCacheUHFModule", s); }
+    public void setBaseModuleType(String s) { setVoid("setBaseModuleType", s); }
     public int getRFIDProtocolStandard() { return getInt("getRFIDProtocolStandard", -999); }
     public void setRFIDProtocolStandard(int v) { setVoid("setRFIDProtocolStandard", v); }
     public int getLinkParameter() { return getInt("getLinkParameter", -999); }
