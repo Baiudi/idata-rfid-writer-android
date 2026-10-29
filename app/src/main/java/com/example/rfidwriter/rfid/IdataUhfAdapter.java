@@ -960,6 +960,21 @@ public class IdataUhfAdapter implements RfidSdk {
         try { ensureSdk(); Object r = callIface("powerSet", dbm); return r instanceof Boolean && (Boolean) r; }
         catch (Throwable e) { Log.w(TAG, "powerSetRaw 异常", e); return false; }
     }
+    /** 诊断用：显式上电。用于 stopInventory 关电源被 SELinux 拒绝后尝试恢复模组状态 */
+    public boolean powerOnRaw() {
+        try { ensureSdk(); Object r = callIface("powerOn"); return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "powerOnRaw 异常", e); return false; }
+    }
+    /** 诊断用：显式下电（注意：SELinux Enforcing 下可能返回 false 并把模组状态搞乱） */
+    public boolean powerOffRaw() {
+        try { ensureSdk(); Object r = callIface("powerOff"); return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "powerOffRaw 异常", e); return false; }
+    }
+    /** 诊断用：模组当前是否上电 */
+    public boolean isPowerOnRaw() {
+        try { ensureSdk(); Object r = callIface("isPowerOn"); return r instanceof Boolean && (Boolean) r; }
+        catch (Throwable e) { Log.w(TAG, "isPowerOnRaw 异常", e); return false; }
+    }
 
     public void logWriteApi() {
         try {

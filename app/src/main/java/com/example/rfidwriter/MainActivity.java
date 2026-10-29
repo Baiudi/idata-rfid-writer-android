@@ -87,6 +87,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_LOCATE_TEST = "com.example.rfidwriter.action.LOCATE_TEST";
     /** 远程「纯净」自检钩子：全程不调用 setPower（怀疑 setPower 内部关电源被 SELinux 拒绝会让模组状态错乱），日志前缀 PURE_TEST */
     public static final String ACTION_PURE_TEST = "com.example.rfidwriter.action.PURE_TEST";
+    /** 远程电源自检钩子：验证「stopInventory 关电源被 SELinux 拒绝 → 模组坏掉(powerGet=-1)」，以及 powerOn() 能否恢复 */
+    public static final String ACTION_POWER_TEST = "com.example.rfidwriter.action.POWER_TEST";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -151,6 +153,7 @@ public class MainActivity extends AppCompatActivity {
                 else if (ACTION_WRITE_TEST.equals(a)) runWriteTest();
                 else if (ACTION_LOCATE_TEST.equals(a)) runLocateTest();
                 else if (ACTION_PURE_TEST.equals(a)) runPureTest();
+                else if (ACTION_POWER_TEST.equals(a)) runPowerTest();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
@@ -159,6 +162,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_WRITE_TEST);
         testFilter.addAction(ACTION_LOCATE_TEST);
         testFilter.addAction(ACTION_PURE_TEST);
+        testFilter.addAction(ACTION_POWER_TEST);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -464,6 +468,63 @@ public class MainActivity extends AppCompatActivity {
     private void runPureTest() {
         if (sdk.isConnected()) doPureTest();
         else { Log.i(TAG, "PURE_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPureTest(), 3000); }
+    }
+
+    private void runPowerTest() {
+        if (sdk.isConnected()) doPowerTest();
+        else { Log.i(TAG, "POWER_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPowerTest(), 3000); }
+    }
+
+    /**
+     * 电源状态自检：验证核心假设——
+     * 「重启后首次 powerGet=20，做过一次 startInventory→stopInventory 之后 powerGet 变成 -1，此后再也读不到标签」。
+     * 根因线索：stopInventory（关 UHF 电源）被 SELinux Enforcing 拒绝
+     *   avc: denied { ioctl } path="/proc/driver/uhf_power_enable" ... permissive=0
+     * 故本钩子按顺序测：
+     *   ① 基线 powerGet / isPowerOn
+     *   ② 第 1 次盘点 3s（记录读到几张）
+     *   ③ stopInventory 后再读 powerGet（预期变 -1）
+     *   ④ 显式 powerOn() 后读 powerGet（验证能否恢复）
+     *   ⑤ 第 2 次盘点 3s（验证恢复后能否读到标签）
+     */
+    private void doPowerTest() {
+        if (!sdk.isConnected()) { Log.w(TAG, "POWER_TEST: 仍未连接 UHF，跳过"); return; }
+        new Thread(() -> {
+            if (!(sdk instanceof IdataUhfAdapter)) { Log.w(TAG, "POWER_TEST: sdk 非 IdataUhfAdapter，跳过"); return; }
+            final IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
+            Log.i(TAG, "POWER_TEST: ①基线 powerGet=" + adp.powerGetRaw() + " isPowerOn=" + adp.isPowerOnRaw());
+
+            sdk.setInventoryMode(1);
+            int n1 = inventoryCount(3000);
+            Log.i(TAG, "POWER_TEST: ②第1次盘点 读到 " + n1 + " 张");
+
+            sdk.stopInventory();
+            Log.i(TAG, "POWER_TEST: ③stop 后 powerGet=" + adp.powerGetRaw() + " isPowerOn=" + adp.isPowerOnRaw());
+
+            boolean on = adp.powerOnRaw();
+            Log.i(TAG, "POWER_TEST: ④powerOn() ret=" + on + " → powerGet=" + adp.powerGetRaw()
+                    + " isPowerOn=" + adp.isPowerOnRaw());
+
+            sdk.setInventoryMode(1);
+            int n2 = inventoryCount(3000);
+            Log.i(TAG, "POWER_TEST: ⑤第2次盘点 读到 " + n2 + " 张");
+            sdk.stopInventory();
+            sdk.setInventoryMode(0);
+            Log.i(TAG, "POWER_TEST: 结束（对比 ②" + n1 + " 张 vs ⑤" + n2 + " 张）");
+        }).start();
+    }
+
+    /** 连续盘点 ms 毫秒，返回读到的唯一 EPC 数量 */
+    private int inventoryCount(int ms) {
+        java.util.Set<String> set = java.util.Collections.newSetFromMap(
+                new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+        java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
+        sdk.startInventory(new RfidSdk.InventoryCallback() {
+            @Override public void onTag(TagInfo t) { if (t.epc != null && !t.epc.isEmpty()) set.add(t.epc); }
+            @Override public void onEnd() { l.countDown(); }
+        });
+        try { l.await(ms, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+        return set.size();
     }
 
     /**
