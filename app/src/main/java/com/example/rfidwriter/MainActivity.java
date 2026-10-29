@@ -584,18 +584,25 @@ public class MainActivity extends AppCompatActivity {
         if (!sdk.isConnected()) { Log.w(TAG, "PURE_TEST: 仍未连接 UHF，跳过"); return; }
         new Thread(() -> {
             final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
-            // 怀疑根因：EPC Gen2 会话静默——标签被盘过一次后翻静默，不离开射频场就不回应。
-            // 这里逐会话(S0~S3)扫描，每个会话：reset 清状态 → 设会话 → 盘点 2.2s，统计读到的唯一 EPC。
-            // S0 标签离场即复位，最易让被静音的标签“复活”，故优先试 0。
-            int[] sessions = {0, 1, 2, 3};
-            for (int s : sessions) {
+            Log.i(TAG, "PURE_TEST: 当前 freqMode=" + (adp != null ? adp.getFreqMode() : -1)
+                    + " session=" + (adp != null ? adp.getSessionMode() : -1));
+            // 怀疑根因：模组残留 SELECT 过滤（filterSet 设得上、on=false 清不掉），导致不过滤盘点 0 读。
+            // 这里逐“清除方式”扫描，每段：应用清除 → 盘点 2.2s，统计唯一 EPC；
+            // 同时记录 pollBuffer 最大长度，确认模组到底“回传了标签”还是“真的空”。
+            String[] names = {"不清除", "filterSet清", "inventoryFilterData清", "resetDefaultSetting"};
+            for (int i = 0; i < names.length; i++) {
                 if (adp != null) {
-                    try { adp.resetModule(); } catch (Throwable e) { Log.w(TAG, "PURE_TEST: resetModule 失败", e); }
-                    try { adp.setSession(s); } catch (Throwable e) { Log.w(TAG, "PURE_TEST: setSession(" + s + ") 失败", e); }
+                    try {
+                        if (i == 0) { /* 不清除 */ }
+                        else if (i == 1) adp.setEpcFilter("", 0, 0, false);
+                        else if (i == 2) adp.clearSelect();
+                        else if (i == 3) adp.resetModule();
+                    } catch (Throwable e) { Log.w(TAG, "PURE_TEST: 清除方式[" + names[i] + "] 失败", e); }
                     adp.setPower(Math.min(getParam("power", 30), 20));
                 }
                 sdk.setInventoryMode(1);
                 java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
+                final int[] maxBuf = {0};
                 java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
                 sdk.startInventory(new RfidSdk.InventoryCallback() {
                     @Override public void onTag(TagInfo t) {
@@ -603,14 +610,24 @@ public class MainActivity extends AppCompatActivity {
                     }
                     @Override public void onEnd() { l.countDown(); }
                 });
-                try { l.await(2200, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                // 另起一轮轮询读取 pollBuffer 最大长度（直接看模组是否回传）
+                long t0 = System.currentTimeMillis();
+                while (System.currentTimeMillis() - t0 < 2200) {
+                    try {
+                        java.lang.reflect.Method pm = (adp != null) ? adp.getClass().getDeclaredMethod("pollBuffer") : null;
+                        if (pm != null) { pm.setAccessible(true); String[] arr = (String[]) pm.invoke(adp); if (arr != null && arr.length > maxBuf[0]) maxBuf[0] = arr.length; }
+                    } catch (Throwable ignore) {}
+                    try { Thread.sleep(120); } catch (InterruptedException ignored) {}
+                }
+                try { l.await(200, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
                 sdk.stopInventory();
                 sdk.setInventoryMode(0);
                 int n = cnt.size();
-                Log.i(TAG, "PURE_TEST: 【session=" + s + "】唯一标签=" + n
+                Log.i(TAG, "PURE_TEST: 【" + names[i] + "】唯一EPC=" + n
+                        + " pollBuffer最大长度=" + maxBuf[0]
                         + (n > 0 ? " EPC首条=" + cnt.keySet().iterator().next() : " (0 读)"));
             }
-            Log.i(TAG, "PURE_TEST: 会话扫描结束（哪个 session 有读数，就说明该 session 能让静默标签复活）");
+            Log.i(TAG, "PURE_TEST: 过滤清除扫描结束");
         }).start();
     }
 

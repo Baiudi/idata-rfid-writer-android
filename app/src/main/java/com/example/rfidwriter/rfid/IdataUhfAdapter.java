@@ -484,6 +484,29 @@ public class IdataUhfAdapter implements RfidSdk {
         throw new NoSuchMethodException("sessionModeSet");
     }
 
+    /** 清除 SELECT 过滤：先试 inventoryFilterData（疑似真正控制硬件 SELECT 的 API），回退 filterSet */
+    public void clearSelect() {
+        boolean ok = false;
+        if (mRawManager != null) {
+            for (java.lang.reflect.Method m : mRawManager.getClass().getMethods()) {
+                if (m.getName().equals("inventoryFilterData") && m.getParameterTypes().length == 5) {
+                    try { m.invoke(mRawManager, 0, 0, 0, "", false); ok = true; } catch (Throwable ignore) {}
+                    break;
+                }
+            }
+        }
+        if (!ok && mIface != null) {
+            try { callIface("inventoryFilterData", 0, 0, 0, "", false); ok = true; } catch (Throwable ignore) {}
+        }
+        if (!ok) {
+            try { setEpcFilter("", 0, 0, false); ok = true; } catch (Throwable ignore) {}
+        }
+        Log.i(TAG, "clearSelect: inventoryFilterData(0,0,0,\"\",false) ok=" + ok);
+    }
+
+    public int getFreqMode() { try { Object o = callIface("frequencyModeGet"); return o instanceof Number ? ((Number) o).intValue() : -999; } catch (Throwable e) { return -999; } }
+    public int getSessionMode() { try { Object o = callIface("sessionModeGet"); return o instanceof Number ? ((Number) o).intValue() : -999; } catch (Throwable e) { return -999; } }
+
     /**
      * 设置 EPC 过滤（SELECT）：开启后模组只回传匹配该 EPC 的标签。
      * 该模组群读缓冲区只保留「最近读到的约 2 张」，多标签场景下目标标签常不在窗口内
