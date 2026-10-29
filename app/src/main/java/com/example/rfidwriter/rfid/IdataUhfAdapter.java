@@ -467,6 +467,14 @@ public class IdataUhfAdapter implements RfidSdk {
                                 + " 解析失败元素=" + parsedFail
                                 + " 新转发=" + forwarded
                                 + " mInvCb=" + (mInvCb != null));
+                        // 低频打印原始缓存元素，确认模组是否真的回传了 RSSI 数值（雷达测距依赖它）
+                        if ((mPollCount % 14) == 1) {
+                            StringBuilder sb = new StringBuilder("轮询原始:");
+                            for (int k = 0; k < Math.min(arr.length, 8); k++) {
+                                sb.append(" [").append(k).append("]='").append(arr[k]).append("'");
+                            }
+                            Log.i(TAG, sb.toString());
+                        }
                     }
                 } catch (Throwable ignore) { /* 轮询异常忽略，继续下一轮 */ }
                 try { Thread.sleep(150); } catch (InterruptedException e) { break; }

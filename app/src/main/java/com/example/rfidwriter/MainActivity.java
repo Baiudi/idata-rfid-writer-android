@@ -82,6 +82,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_READ_TEST = "com.example.rfidwriter.action.READ_TEST";
     /** 远程写测试钩子：am broadcast -a ...WRITE_TEST 触发「连(若未连)→检测单张→往USER区写测试串→回读校验」，日志前缀 RFID_TEST */
     public static final String ACTION_WRITE_TEST = "com.example.rfidwriter.action.WRITE_TEST";
+    /** 远程定位自检钩子：am broadcast -a ...LOCATE_TEST 触发「对比连续盘点 mode=0 / mode=1 是否回传标签及 RSSI」，日志前缀 LOCATE_TEST */
+    public static final String ACTION_LOCATE_TEST = "com.example.rfidwriter.action.LOCATE_TEST";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -144,12 +146,14 @@ public class MainActivity extends AppCompatActivity {
                 if (ACTION_CONNECT.equals(a)) connect();
                 else if (ACTION_READ_TEST.equals(a)) runReadTest();
                 else if (ACTION_WRITE_TEST.equals(a)) runWriteTest();
+                else if (ACTION_LOCATE_TEST.equals(a)) runLocateTest();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
         testFilter.addAction(ACTION_CONNECT);
         testFilter.addAction(ACTION_READ_TEST);
         testFilter.addAction(ACTION_WRITE_TEST);
+        testFilter.addAction(ACTION_LOCATE_TEST);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -444,6 +448,55 @@ public class MainActivity extends AppCompatActivity {
     private void runWriteTest() {
         if (sdk.isConnected()) doWriteTest();
         else { Log.i(TAG, "WRITE_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doWriteTest(), 3000); }
+    }
+
+    /** 远程定位自检：若未连接先连，3s 后对比连续盘点 mode=0 / mode=1 的标签回传情况 */
+    private void runLocateTest() {
+        if (sdk.isConnected()) doLocateTest();
+        else { Log.i(TAG, "LOCATE_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doLocateTest(), 3000); }
+    }
+
+    /**
+     * 定位自检主体：同一天线位置下，分别在「非连续盘点 mode=0」与「连续盘点 mode=1」下各盘点 2.5s，
+     * 打印回传到的标签数与每条标签的 RSSI 原始串，用于确认：
+     *  ① 雷达定位必须用 mode=1（否则模块不回传标签）；
+     *  ② 模组缓存是否真的带 RSSI 数值（决定雷达能否测距，无 RSSI 时走 RSSI_FALLBACK）。
+     */
+    private void doLocateTest() {
+        if (!sdk.isConnected()) { Log.w(TAG, "LOCATE_TEST: 仍未连接 UHF，跳过"); return; }
+        sdk.setPower(getParam("power", 30));
+        new Thread(() -> {
+            for (int mode = 0; mode <= 1; mode++) {
+                final int m = mode;
+                sdk.setInventoryMode(m);
+                java.util.Map<String, Float> seen = new java.util.concurrent.ConcurrentHashMap<>();
+                int[] raw = {0};
+                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+                sdk.startInventory(new RfidSdk.InventoryCallback() {
+                    @Override public void onTag(TagInfo t) {
+                        raw[0]++;
+                        if (t.epc != null && !t.epc.isEmpty()) {
+                            float r = parseRssi(t.rssi);
+                            Log.i(TAG, "LOCATE_TEST: mode=" + m + " EPC=" + t.epc
+                                    + " rssi原始='" + t.rssi + "' 解析=" + r);
+                            Float prev = seen.get(t.epc);
+                            if (prev == null || r > prev) seen.put(t.epc, r);
+                        }
+                    }
+                    @Override public void onEnd() { latch.countDown(); }
+                });
+                try { latch.await(2500, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                sdk.stopInventory();
+                StringBuilder sb = new StringBuilder();
+                for (java.util.Map.Entry<String, Float> e : seen.entrySet()) {
+                    sb.append("\n    EPC=").append(e.getKey()).append(" 最强RSSI=").append(e.getValue());
+                }
+                Log.i(TAG, "LOCATE_TEST: 【mode=" + m + "】回调次数=" + raw[0]
+                        + " 不同标签数=" + seen.size() + (sb.length() > 0 ? sb.toString() : "（无任何标签回传）"));
+            }
+            sdk.setInventoryMode(0);
+            Log.i(TAG, "LOCATE_TEST: 自检结束");
+        }).start();
     }
 
     /** 只读测试主体：检测天线范围内标签，对 EPC/TID/USER 三区分别用【三种过滤方式】做原始探针，
