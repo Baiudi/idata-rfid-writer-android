@@ -457,43 +457,77 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 定位自检主体：同一天线位置下，分别在「非连续盘点 mode=0」与「连续盘点 mode=1」下各盘点 2.5s，
-     * 打印回传到的标签数与每条标签的 RSSI 原始串，用于确认：
-     *  ① 雷达定位必须用 mode=1（否则模块不回传标签）；
-     *  ② 模组缓存是否真的带 RSSI 数值（决定雷达能否测距，无 RSSI 时走 RSSI_FALLBACK）。
+     * 定位自检主体（参数扫描）：
+     * 阶段A 用与「盘点」完全相同的条件（mode=1、不设功率、不过滤）读 3s，选出出现次数最多的标签作为目标；
+     * 阶段B 逐个配置各测 2.5s，统计「目标被回传的次数 / 其中带 RSSI 的次数 / 总回调次数」，
+     * 一次性确定：功率 30dBm 是否反而读不到、EPC 过滤的 startBit/lenBits 该怎么填。
      */
     private void doLocateTest() {
         if (!sdk.isConnected()) { Log.w(TAG, "LOCATE_TEST: 仍未连接 UHF，跳过"); return; }
-        sdk.setPower(getParam("power", 30));
         new Thread(() -> {
-            for (int mode = 0; mode <= 1; mode++) {
-                final int m = mode;
-                sdk.setInventoryMode(m);
-                java.util.Map<String, Float> seen = new java.util.concurrent.ConcurrentHashMap<>();
-                int[] raw = {0};
-                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+            final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
+            // ---- 阶段A：基准条件（与盘点一致：mode=1、不设功率、不过滤）----
+            sdk.setInventoryMode(1);
+            if (adp != null) adp.setEpcFilter("", 0, 0, false);
+            java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
+            java.util.concurrent.CountDownLatch l0 = new java.util.concurrent.CountDownLatch(1);
+            sdk.startInventory(new RfidSdk.InventoryCallback() {
+                @Override public void onTag(TagInfo t) {
+                    if (t.epc != null && !t.epc.isEmpty()) cnt.merge(t.epc, 1, Integer::sum);
+                }
+                @Override public void onEnd() { l0.countDown(); }
+            });
+            try { l0.await(3000, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+            sdk.stopInventory();
+            String target = null; int bestN = 0;
+            for (java.util.Map.Entry<String, Integer> e : cnt.entrySet()) {
+                Log.i(TAG, "LOCATE_TEST: 阶段A 标签 " + e.getKey() + " 次数=" + e.getValue());
+                if (e.getValue() > bestN) { bestN = e.getValue(); target = e.getKey(); }
+            }
+            if (target == null) {
+                Log.i(TAG, "LOCATE_TEST: 阶段A 未读到任何标签，自检中止");
+                sdk.setInventoryMode(0);
+                return;
+            }
+            final String tgt = target;
+            final int lenBits = tgt.length() * 4;
+            Log.i(TAG, "LOCATE_TEST: 选定目标=" + tgt + "（hex长度" + tgt.length() + " → lenBits=" + lenBits + "）");
+
+            // ---- 阶段B：逐个配置扫描 ----
+            // 配置含义 {过滤模式, 功率}；过滤模式 0=不过滤 1=startBit32+lenBits 2=startBit0+lenBits 3=startBit32+96
+            int[][] cfgs = {{0, 0}, {0, 30}, {1, 30}, {1, 0}, {2, 0}, {3, 0}};
+            String[] names = {
+                    "不过滤/不设功率(基准)", "不过滤/功率30",
+                    "过滤32+" + lenBits + "b/功率30", "过滤32+" + lenBits + "b/不设功率",
+                    "过滤0+" + lenBits + "b/不设功率", "过滤32+96b/不设功率"};
+            for (int ci = 0; ci < cfgs.length; ci++) {
+                int fmode = cfgs[ci][0], power = cfgs[ci][1];
+                int useLen = (fmode == 3) ? 96 : lenBits;
+                int useStart = (fmode == 2) ? 0 : 32;
+                if (adp != null) {
+                    if (fmode == 0) adp.setEpcFilter("", 0, 0, false);
+                    else adp.setEpcFilter(tgt, useStart, useLen, true);
+                }
+                sdk.setInventoryMode(1);
+                if (power > 0) sdk.setPower(power);
+                int[] hits = {0}, rssiOk = {0}, total = {0};
+                java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
                 sdk.startInventory(new RfidSdk.InventoryCallback() {
                     @Override public void onTag(TagInfo t) {
-                        raw[0]++;
-                        if (t.epc != null && !t.epc.isEmpty()) {
-                            float r = parseRssi(t.rssi);
-                            Log.i(TAG, "LOCATE_TEST: mode=" + m + " EPC=" + t.epc
-                                    + " rssi原始='" + t.rssi + "' 解析=" + r);
-                            Float prev = seen.get(t.epc);
-                            if (prev == null || r > prev) seen.put(t.epc, r);
+                        total[0]++;
+                        if (tgt.equals(t.epc)) {
+                            hits[0]++;
+                            if (parseRssi(t.rssi) > -120f) rssiOk[0]++;
                         }
                     }
-                    @Override public void onEnd() { latch.countDown(); }
+                    @Override public void onEnd() { l.countDown(); }
                 });
-                try { latch.await(2500, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                try { l.await(2500, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
                 sdk.stopInventory();
-                StringBuilder sb = new StringBuilder();
-                for (java.util.Map.Entry<String, Float> e : seen.entrySet()) {
-                    sb.append("\n    EPC=").append(e.getKey()).append(" 最强RSSI=").append(e.getValue());
-                }
-                Log.i(TAG, "LOCATE_TEST: 【mode=" + m + "】回调次数=" + raw[0]
-                        + " 不同标签数=" + seen.size() + (sb.length() > 0 ? sb.toString() : "（无任何标签回传）"));
+                Log.i(TAG, "LOCATE_TEST: 【" + names[ci] + "】目标命中=" + hits[0]
+                        + " 带RSSI=" + rssiOk[0] + " 总回调=" + total[0]);
             }
+            if (adp != null) adp.setEpcFilter("", 0, 0, false);
             sdk.setInventoryMode(0);
             Log.i(TAG, "LOCATE_TEST: 自检结束");
         }).start();
@@ -1422,7 +1456,7 @@ public class MainActivity extends AppCompatActivity {
         // 多标签场景下目标标签常不在窗口内（实测盘点可见 4 张、定位缓存却是另外 2 张），
         // 开启过滤后缓冲区只会有目标标签，雷达才能稳定命中。
         if (sdk instanceof IdataUhfAdapter) {
-            ((IdataUhfAdapter) sdk).setEpcFilter(epc, epc.length() * 4, true);
+            ((IdataUhfAdapter) sdk).setEpcFilter(epc, 32, epc.length() * 4, true);
         }
 
         float density = getResources().getDisplayMetrics().density;
@@ -1477,7 +1511,7 @@ public class MainActivity extends AppCompatActivity {
             sdk.setInventoryMode(0);
             // 关闭 EPC 过滤，否则后续盘点/读写会被过滤成「只有刚才那一张」
             if (sdk instanceof IdataUhfAdapter) {
-                ((IdataUhfAdapter) sdk).setEpcFilter("", 0, false);
+                ((IdataUhfAdapter) sdk).setEpcFilter("", 0, 0, false);
             }
             // 定位是由盘点发起的：关闭后自动回到盘点会话继续（保留统计、累加读取）
             if (locateFromInventory) {

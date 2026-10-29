@@ -424,14 +424,14 @@ public class IdataUhfAdapter implements RfidSdk {
      * @param lenBits EPC 位长（= hex 字符数 * 4）
      * @param on      true 开启过滤 / false 关闭
      */
-    public boolean setEpcFilter(String epcHex, int lenBits, boolean on) {
+    public boolean setEpcFilter(String epcHex, int startBit, int lenBits, boolean on) {
         if (!mConnected.get()) return false;
         // UHFInterface.filterSet(int bank,int startBit,int lenBits,String data,int on)
         try {
-            Object r = callIface("filterSet", 1, 32, lenBits, epcHex, on ? 1 : 0);
+            Object r = callIface("filterSet", 1, startBit, lenBits, epcHex, on ? 1 : 0);
             boolean ret = r instanceof Boolean ? (Boolean) r : (r != null);
-            Log.i(TAG, "setEpcFilter(iface): epc=" + epcHex + " lenBits=" + lenBits
-                    + " on=" + on + " ret=" + ret);
+            Log.i(TAG, "setEpcFilter(iface): epc=" + epcHex + " startBit=" + startBit
+                    + " lenBits=" + lenBits + " on=" + on + " ret=" + ret);
             return ret;
         } catch (Throwable e) {
             Log.w(TAG, "setEpcFilter iface 路径失败（末参 int），回退 UHFManager（末参 boolean）", e);
@@ -443,9 +443,10 @@ public class IdataUhfAdapter implements RfidSdk {
             for (java.lang.reflect.Method m : raw.getClass().getMethods()) {
                 if (!m.getName().equals("filterSet") || m.getParameterTypes().length != 5) continue;
                 if (m.getParameterTypes()[4] != boolean.class) continue;
-                Object r = m.invoke(raw, 1, 32, lenBits, epcHex, on);
+                Object r = m.invoke(raw, 1, startBit, lenBits, epcHex, on);
                 boolean ret = r instanceof Boolean ? (Boolean) r : (r != null);
-                Log.i(TAG, "setEpcFilter(mgr): epc=" + epcHex + " on=" + on + " ret=" + ret);
+                Log.i(TAG, "setEpcFilter(mgr): epc=" + epcHex + " startBit=" + startBit
+                        + " lenBits=" + lenBits + " on=" + on + " ret=" + ret);
                 return ret;
             }
         } catch (Throwable e) {
