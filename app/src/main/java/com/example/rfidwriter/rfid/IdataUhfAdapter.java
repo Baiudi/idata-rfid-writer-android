@@ -439,7 +439,10 @@ public class IdataUhfAdapter implements RfidSdk {
      */
     public void resetModule() throws Exception {
         boolean did = false;
-        if (mRawManager != null) {
+        // 【实验开关】DO_RESET=false 时跳过真正的 resetDefaultSetting，仅重新上电——用于验证
+        // 「resetDefaultSetting 是否把射频输出关死、powerOn 无法恢复」这一假设。
+        final boolean DO_RESET = false;
+        if (DO_RESET && mRawManager != null) {
             for (java.lang.reflect.Method m : mRawManager.getClass().getMethods()) {
                 if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
                     m.invoke(mRawManager);
@@ -449,7 +452,7 @@ public class IdataUhfAdapter implements RfidSdk {
                 }
             }
         }
-        if (!did && mUhf != null) {
+        if (!did && DO_RESET && mUhf != null) {
             for (java.lang.reflect.Method m : mUhfClass.getMethods()) {
                 if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
                     m.invoke(mUhf);
@@ -459,7 +462,8 @@ public class IdataUhfAdapter implements RfidSdk {
                 }
             }
         }
-        if (!did) throw new NoSuchMethodException("resetDefaultSetting");
+        if (!did && DO_RESET) throw new NoSuchMethodException("resetDefaultSetting");
+        if (!DO_RESET) Log.i(TAG, "resetModule: 【实验】跳过 resetDefaultSetting，仅重新上电");
         // 复位后射频载波被关闭，必须重新上电，否则模组断电、盘点 0 读。
         try {
             Object r = callIface("powerOn");
