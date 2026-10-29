@@ -456,6 +456,35 @@ public class IdataUhfAdapter implements RfidSdk {
     }
 
     /**
+     * 设置盘存会话(Session, S0~S3)。EPC Gen2 标签被盘到一次后会翻成「静默」，
+     * 在某会话里只要不离开射频场就不回应；iUHF 能读而本 App 盘点 0 读，
+     * 极可能是标签被其它 App/上一次盘点静默在了某个会话里。
+     * 切换到另一个会话(S0 标签离场即复位，最快「复活」)可让静默标签重新回应。
+     */
+    public void setSession(int s) throws Exception {
+        if (mRawManager != null) {
+            for (java.lang.reflect.Method m : mRawManager.getClass().getMethods()) {
+                if (m.getName().equals("sessionModeSet") && m.getParameterTypes().length == 1) {
+                    m.invoke(mRawManager, s);
+                    Log.i(TAG, "setSession: 已对 mRawManager 设 session=" + s);
+                    return;
+                }
+            }
+        }
+        if (mUhf != null) {
+            for (java.lang.reflect.Method m : mUhfClass.getMethods()) {
+                if (m.getName().equals("sessionModeSet") && m.getParameterTypes().length == 1) {
+                    m.invoke(mUhf, s);
+                    Log.i(TAG, "setSession: 已对 mUhf 设 session=" + s);
+                    return;
+                }
+            }
+        }
+        if (mIface != null) { callIface("sessionModeSet", s); Log.i(TAG, "setSession: 已对 mIface 设 session=" + s); return; }
+        throw new NoSuchMethodException("sessionModeSet");
+    }
+
+    /**
      * 设置 EPC 过滤（SELECT）：开启后模组只回传匹配该 EPC 的标签。
      * 该模组群读缓冲区只保留「最近读到的约 2 张」，多标签场景下目标标签常不在窗口内
      * （实测盘点能看到 4 张，定位时缓存里却是另外 2 张），导致雷达定位抓不到目标。

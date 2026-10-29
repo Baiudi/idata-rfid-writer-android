@@ -584,34 +584,33 @@ public class MainActivity extends AppCompatActivity {
         if (!sdk.isConnected()) { Log.w(TAG, "PURE_TEST: 仍未连接 UHF，跳过"); return; }
         new Thread(() -> {
             final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
-            Log.i(TAG, "PURE_TEST: 开始（不调 setPower / 不过滤）powerGet=" + (adp != null ? adp.powerGetRaw() : -999));
-            // 关键：iData 模组把 SELECT 过滤/会话/算法持久化在固件，普通 filterSet 清不掉；
-            // 这里用 resetDefaultSetting() 彻底复位（与 iUHF 每次启动一致），随后重设功率。
-            if (adp != null) {
-                try { adp.resetModule(); Log.i(TAG, "PURE_TEST: resetModule 成功（已清残留 SELECT/会话）"); }
-                catch (Throwable e) { Log.w(TAG, "PURE_TEST: resetModule 失败（忽略）", e); }
-                adp.setPower(Math.min(getParam("power", 30), 20));
-            }
-            sdk.setInventoryMode(1);
-            java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
-            java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
-            sdk.startInventory(new RfidSdk.InventoryCallback() {
-                @Override public void onTag(TagInfo t) {
-                    if (t.epc != null && !t.epc.isEmpty()) cnt.merge(t.epc, 1, Integer::sum);
+            // 怀疑根因：EPC Gen2 会话静默——标签被盘过一次后翻静默，不离开射频场就不回应。
+            // 这里逐会话(S0~S3)扫描，每个会话：reset 清状态 → 设会话 → 盘点 2.2s，统计读到的唯一 EPC。
+            // S0 标签离场即复位，最易让被静音的标签“复活”，故优先试 0。
+            int[] sessions = {0, 1, 2, 3};
+            for (int s : sessions) {
+                if (adp != null) {
+                    try { adp.resetModule(); } catch (Throwable e) { Log.w(TAG, "PURE_TEST: resetModule 失败", e); }
+                    try { adp.setSession(s); } catch (Throwable e) { Log.w(TAG, "PURE_TEST: setSession(" + s + ") 失败", e); }
+                    adp.setPower(Math.min(getParam("power", 30), 20));
                 }
-                @Override public void onEnd() { l.countDown(); }
-            });
-            try { l.await(3000, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
-            sdk.stopInventory();
-            sdk.setInventoryMode(0);
-            if (cnt.isEmpty()) {
-                Log.i(TAG, "PURE_TEST: 3s 内读到 0 张标签（天线场内无标签，或射频未工作）");
-            } else {
-                for (java.util.Map.Entry<String, Integer> e : cnt.entrySet()) {
-                    Log.i(TAG, "PURE_TEST: 标签 " + e.getKey() + " 次数=" + e.getValue());
-                }
-                Log.i(TAG, "PURE_TEST: 共 " + cnt.size() + " 张唯一标签");
+                sdk.setInventoryMode(1);
+                java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
+                java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
+                sdk.startInventory(new RfidSdk.InventoryCallback() {
+                    @Override public void onTag(TagInfo t) {
+                        if (t.epc != null && !t.epc.isEmpty()) cnt.merge(t.epc, 1, Integer::sum);
+                    }
+                    @Override public void onEnd() { l.countDown(); }
+                });
+                try { l.await(2200, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                sdk.stopInventory();
+                sdk.setInventoryMode(0);
+                int n = cnt.size();
+                Log.i(TAG, "PURE_TEST: 【session=" + s + "】唯一标签=" + n
+                        + (n > 0 ? " EPC首条=" + cnt.keySet().iterator().next() : " (0 读)"));
             }
+            Log.i(TAG, "PURE_TEST: 会话扫描结束（哪个 session 有读数，就说明该 session 能让静默标签复活）");
         }).start();
     }
 
