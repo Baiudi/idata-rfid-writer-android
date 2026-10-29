@@ -367,17 +367,32 @@ public class IdataUhfAdapter implements RfidSdk {
             String msg;
             try {
                 ensureSdk();
-                // 【选项3·规避切电】不再调用 resetDefaultSetting（它会关射频载波，触发 SELinux ioctl 拒绝 +
-                // libModuleAPIJni SIGSEGV，模组掉电、下次盘点 0 读）。改为：上电(revive) + 无切电的寄存器复位。
-                Object r = callIface("powerOn");
-                ok = r instanceof Boolean && (Boolean) r;
-                Log.i(TAG, "init[AvoidPowerToggle]: powerOn=" + ok + " moduleType=" + mModuleType + " bindPath=" + mBindPath);
+                // 【选项3·彻底规避上电崩溃】本设备证实：对 idata_uhf 的 powerOn（切电动作）在模组处于断电态时
+                // 会令 UHF 系统服务 (com.android.idata.iuhf) 在 libModuleAPIJni.so 触发 SIGSEGV 崩溃、模组掉电。
+                // 策略：仅当查询到模组确实断电(powerGet<=0)才尝试 powerOn（包在 try 内容忍崩溃）；
+                // 若模组已由 iUHF/系统保持在带电态，则【跳过 powerOn】，绝不主动触发崩溃。
+                int pg = -2;
+                try { pg = powerGetRaw(); } catch (Throwable ignore) {}
+                if (pg <= 0) {
+                    try {
+                        Object r = callIface("powerOn");
+                        Log.i(TAG, "init[AvoidPowerToggle]: 模组断电(powerGet=" + pg + ")，尝试 powerOn ret=" + r);
+                    } catch (Throwable e2) {
+                        Log.w(TAG, "init: powerOn 异常（模组可能仍断电，继续尝试读取）", e2);
+                    }
+                    try { pg = powerGetRaw(); } catch (Throwable ignore) {}
+                } else {
+                    Log.i(TAG, "init[AvoidPowerToggle]: 模组已带电(powerGet=" + pg + ")，跳过 powerOn（规避 SIGSEGV 崩溃）");
+                }
+                Log.i(TAG, "init[AvoidPowerToggle]: powerGet=" + pg + " moduleType=" + mModuleType + " bindPath=" + mBindPath);
                 // 清残留 SELECT 过滤 + 切到 S0 会话（标签离场即复位，规避会话静默），均为寄存器写、不切电。
                 try { clearSelect(); } catch (Throwable e2) { Log.w(TAG, "init: clearSelect 失败（忽略）", e2); }
                 try { setSession(0); } catch (Throwable e2) { Log.w(TAG, "init: setSession(0) 失败（忽略）", e2); }
-                Log.i(TAG, "init[AvoidPowerToggle]: 已 clearSelect + setSession(0)（未做 resetDefaultSetting，规避切电）");
-                msg = ok ? ("UHF 已连接（规避切电模式，绑定路径：" + mBindPath + "）")
-                        : "UHF 初始化：powerOn 返回 false（请确认设备 UHF 模块正常/已上电）";
+                Log.i(TAG, "init[AvoidPowerToggle]: 已 clearSelect + setSession(0)（未做 resetDefaultSetting，规避切电崩溃）");
+                // 模组已带电(powerGet>0)才视为可用；否则提示先用 iUHF 上电一次。
+                ok = (pg > 0);
+                msg = ok ? ("UHF 已连接（模组带电，规避切电模式，绑定路径：" + mBindPath + "）")
+                        : "UHF 模组当前未上电（powerGet=" + pg + "）：请先用 iUHF 做“读取标签”上电一次，再回本 App 盘点";
             } catch (Throwable e) {
                 msg = "UHF 初始化异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
                 Log.e(TAG, "init failed", e);
@@ -666,6 +681,10 @@ public class IdataUhfAdapter implements RfidSdk {
             } catch (Throwable e) {
                 Log.w(TAG, "registerUHFCallback 绑定失败（忽略，走轮询路径）", e);
             }
+            // 开启连续盘点模式（flag=true），否则 R2000 不把标签缓存进 readTagFromBuffer，
+            // 我们轮询永远读到空 → 盘点 0 张。这一步是「能读到」的关键。
+            try { callIface("inventoryModeSet", 0, true); Log.i(TAG, "startInventory: 已 inventoryModeSet(0,true) 开启连续盘点"); }
+            catch (Throwable e) { Log.w(TAG, "inventoryModeSet 开启失败（忽略）", e); }
             Object r = callIface("startInventoryTag");
             boolean started = r instanceof Boolean ? (Boolean) r : (r != null);
             Log.i(TAG, "startInventory: startInventoryTag 已调用 ret=" + started);
