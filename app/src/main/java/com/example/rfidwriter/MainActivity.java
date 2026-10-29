@@ -57,6 +57,7 @@ public class MainActivity extends AppCompatActivity {
     private static final int REQ_PICK_CSV = 1001;
     private static final int REQ_PICK_LEDGER = 1002;
     private String PWD = "00000000";                       // 访问密码(hex)，设置页可配置；标签被锁时填入真实密码
+    private static final String KNOWN_ASSET_EPC = "300833B2DDD9014000000000"; // 历史实测过的资产标签 EPC（自检兜底目标）
     /** 模组只回传 EPC、不回传 RSSI 数值时，雷达定位使用的兜底信号强度（dBm，中等距离） */
     private static final float RSSI_FALLBACK = -65f;
     private static final long INVENTORY_WINDOW_MS = 3000;  // 单标签检测窗口（拉长，确保首张标签稳定出现）
@@ -457,10 +458,12 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 定位自检主体（参数扫描）：
-     * 阶段A 用与「盘点」完全相同的条件（mode=1、不设功率、不过滤）读 3s，选出出现次数最多的标签作为目标；
-     * 阶段B 逐个配置各测 2.5s，统计「目标被回传的次数 / 其中带 RSSI 的次数 / 总回调次数」，
-     * 一次性确定：功率 30dBm 是否反而读不到、EPC 过滤的 startBit/lenBits 该怎么填。
+     * 定位自检主体（参数扫描，鲁棒版）：
+     * 阶段A 用与「盘点」完全相同的条件（mode=1、不设功率、不过滤）读 3s 收集标签；
+     * 阶段B 逐个配置各测 2s，统计「目标命中 / 带 RSSI 次数 / 任意标签总回传」。
+     * 关键：阶段A 读不到标签时不再中止——改用历史已知资产标签 EPC 兜底继续扫描。
+     * 因为 EPC 过滤(SELECT) 会显著提升模组灵敏度：卷装标签互相屏蔽、或标签较远时，
+     * 常常只有开启过滤后才读得到（实测命中 6 次/2.5s → 67~121 次/2.5s）。
      */
     private void doLocateTest() {
         if (!sdk.isConnected()) { Log.w(TAG, "LOCATE_TEST: 仍未连接 UHF，跳过"); return; }
@@ -484,22 +487,27 @@ public class MainActivity extends AppCompatActivity {
                 Log.i(TAG, "LOCATE_TEST: 阶段A 标签 " + e.getKey() + " 次数=" + e.getValue());
                 if (e.getValue() > bestN) { bestN = e.getValue(); target = e.getKey(); }
             }
+            boolean fallback = false;
             if (target == null) {
-                Log.i(TAG, "LOCATE_TEST: 阶段A 未读到任何标签，自检中止");
-                sdk.setInventoryMode(0);
-                return;
+                target = KNOWN_ASSET_EPC;
+                fallback = true;
+                Log.i(TAG, "LOCATE_TEST: 阶段A 基准 0 张，改用已知资产标签兜底目标=" + target + "（靠 EPC 过滤提灵敏度）");
+            } else {
+                Log.i(TAG, "LOCATE_TEST: 阶段A 读到 " + cnt.size() + " 张，选定目标=" + target + " 次数=" + bestN);
             }
             final String tgt = target;
             final int lenBits = tgt.length() * 4;
-            Log.i(TAG, "LOCATE_TEST: 选定目标=" + tgt + "（hex长度" + tgt.length() + " → lenBits=" + lenBits + "）");
 
             // ---- 阶段B：逐个配置扫描 ----
-            // 配置含义 {过滤模式, 功率}；过滤模式 0=不过滤 1=startBit32+lenBits 2=startBit0+lenBits 3=startBit32+96
-            int[][] cfgs = {{0, 0}, {0, 30}, {1, 30}, {1, 0}, {2, 0}, {3, 0}};
+            // {过滤模式, 功率}；过滤模式 0=不过滤 1=startBit32+lenBits 2=startBit0+lenBits 3=startBit32+96
+            int[][] cfgs = {
+                    {0, 0}, {3, 0}, {1, 0}, {2, 0},
+                    {3, 20}, {0, 20}, {3, 10}, {3, 30}};
             String[] names = {
-                    "不过滤/不设功率(基准)", "不过滤/功率30",
-                    "过滤32+" + lenBits + "b/功率30", "过滤32+" + lenBits + "b/不设功率",
-                    "过滤0+" + lenBits + "b/不设功率", "过滤32+96b/不设功率"};
+                    "不过滤/不设功率(基准)", "过滤32+96b/不设功率",
+                    "过滤32+" + lenBits + "b/不设功率", "过滤0+" + lenBits + "b/不设功率",
+                    "过滤32+96b/功率20", "不过滤/功率20",
+                    "过滤32+96b/功率10", "过滤32+96b/功率30"};
             for (int ci = 0; ci < cfgs.length; ci++) {
                 int fmode = cfgs[ci][0], power = cfgs[ci][1];
                 int useLen = (fmode == 3) ? 96 : lenBits;
@@ -522,10 +530,11 @@ public class MainActivity extends AppCompatActivity {
                     }
                     @Override public void onEnd() { l.countDown(); }
                 });
-                try { l.await(2500, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+                try { l.await(2000, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
                 sdk.stopInventory();
                 Log.i(TAG, "LOCATE_TEST: 【" + names[ci] + "】目标命中=" + hits[0]
-                        + " 带RSSI=" + rssiOk[0] + " 总回调=" + total[0]);
+                        + " 带RSSI=" + rssiOk[0] + " 任意标签总回调=" + total[0]
+                        + (fallback ? " (兜底目标)" : ""));
             }
             if (adp != null) adp.setEpcFilter("", 0, 0, false);
             sdk.setInventoryMode(0);
