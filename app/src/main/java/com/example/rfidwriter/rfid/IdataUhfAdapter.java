@@ -507,6 +507,30 @@ public class IdataUhfAdapter implements RfidSdk {
     public int getFreqMode() { try { Object o = callIface("frequencyModeGet"); return o instanceof Number ? ((Number) o).intValue() : -999; } catch (Throwable e) { return -999; } }
     public int getSessionMode() { try { Object o = callIface("sessionModeGet"); return o instanceof Number ? ((Number) o).intValue() : -999; } catch (Throwable e) { return -999; } }
 
+    /** 设置频率区间(freqMode)。iData 模组 frequencyModeSet(int)：不同 int 对应不同法规频段；\n     * 设备默认 freqMode=1 可能并非中国 920-925MHz，导致盘点 0 读；iUHF 能读说明它设了正确频段。 */
+    public void setFreqMode(int m) throws Exception {
+        if (mRawManager != null) {
+            for (java.lang.reflect.Method me : mRawManager.getClass().getMethods()) {
+                if (me.getName().equals("frequencyModeSet") && me.getParameterTypes().length == 1) {
+                    me.invoke(mRawManager, m);
+                    Log.i(TAG, "setFreqMode: 已对 mRawManager 设 freqMode=" + m);
+                    return;
+                }
+            }
+        }
+        if (mUhf != null) {
+            for (java.lang.reflect.Method me : mUhfClass.getMethods()) {
+                if (me.getName().equals("frequencyModeSet") && me.getParameterTypes().length == 1) {
+                    me.invoke(mUhf, m);
+                    Log.i(TAG, "setFreqMode: 已对 mUhf 设 freqMode=" + m);
+                    return;
+                }
+            }
+        }
+        if (mIface != null) { callIface("frequencyModeSet", m); Log.i(TAG, "setFreqMode: 已对 mIface 设 freqMode=" + m); return; }
+        throw new NoSuchMethodException("frequencyModeSet");
+    }
+
     /**
      * 设置 EPC 过滤（SELECT）：开启后模组只回传匹配该 EPC 的标签。
      * 该模组群读缓冲区只保留「最近读到的约 2 张」，多标签场景下目标标签常不在窗口内

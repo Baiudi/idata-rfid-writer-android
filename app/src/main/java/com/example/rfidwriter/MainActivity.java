@@ -586,18 +586,15 @@ public class MainActivity extends AppCompatActivity {
             final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
             Log.i(TAG, "PURE_TEST: 当前 freqMode=" + (adp != null ? adp.getFreqMode() : -1)
                     + " session=" + (adp != null ? adp.getSessionMode() : -1));
-            // 怀疑根因：模组残留 SELECT 过滤（filterSet 设得上、on=false 清不掉），导致不过滤盘点 0 读。
-            // 这里逐“清除方式”扫描，每段：应用清除 → 盘点 2.2s，统计唯一 EPC；
-            // 同时记录 pollBuffer 最大长度，确认模组到底“回传了标签”还是“真的空”。
-            String[] names = {"不清除", "filterSet清", "inventoryFilterData清", "resetDefaultSetting"};
-            for (int i = 0; i < names.length; i++) {
+            // 4 种过滤清除方式（含 resetDefaultSetting）全部 0 读、pollBuffer 也空 → 排除残留 SELECT 过滤。
+            // 新假设：freqMode=1 并非中国 920-925MHz，模组停在不读这些标签的频段；iUHF 能读说明它设了正确频段。
+            // 这里扫描 freqMode 0~4（每段 reset→设 freq→盘点 2.2s），看哪个频段能读到标签。
+            int[] freqs = {0, 1, 2, 3, 4};
+            for (int f : freqs) {
                 if (adp != null) {
-                    try {
-                        if (i == 0) { /* 不清除 */ }
-                        else if (i == 1) adp.setEpcFilter("", 0, 0, false);
-                        else if (i == 2) adp.clearSelect();
-                        else if (i == 3) adp.resetModule();
-                    } catch (Throwable e) { Log.w(TAG, "PURE_TEST: 清除方式[" + names[i] + "] 失败", e); }
+                    try { adp.resetModule(); } catch (Throwable e) { Log.w(TAG, "PURE_TEST: resetModule 失败", e); }
+                    try { adp.setFreqMode(f); } catch (Throwable e) { Log.w(TAG, "PURE_TEST: setFreqMode(" + f + ") 失败", e); }
+                    try { adp.setSession(0); } catch (Throwable ignore) {}
                     adp.setPower(Math.min(getParam("power", 30), 20));
                 }
                 sdk.setInventoryMode(1);
@@ -610,7 +607,6 @@ public class MainActivity extends AppCompatActivity {
                     }
                     @Override public void onEnd() { l.countDown(); }
                 });
-                // 另起一轮轮询读取 pollBuffer 最大长度（直接看模组是否回传）
                 long t0 = System.currentTimeMillis();
                 while (System.currentTimeMillis() - t0 < 2200) {
                     try {
@@ -623,11 +619,11 @@ public class MainActivity extends AppCompatActivity {
                 sdk.stopInventory();
                 sdk.setInventoryMode(0);
                 int n = cnt.size();
-                Log.i(TAG, "PURE_TEST: 【" + names[i] + "】唯一EPC=" + n
+                Log.i(TAG, "PURE_TEST: 【freqMode=" + f + "】唯一EPC=" + n
                         + " pollBuffer最大长度=" + maxBuf[0]
                         + (n > 0 ? " EPC首条=" + cnt.keySet().iterator().next() : " (0 读)"));
             }
-            Log.i(TAG, "PURE_TEST: 过滤清除扫描结束");
+            Log.i(TAG, "PURE_TEST: 频率区间扫描结束（哪个 freqMode 有读数，即正确频段）");
         }).start();
     }
 
