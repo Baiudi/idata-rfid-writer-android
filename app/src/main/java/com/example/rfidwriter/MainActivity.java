@@ -585,10 +585,13 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
             Log.i(TAG, "PURE_TEST: 开始（不调 setPower / 不过滤）powerGet=" + (adp != null ? adp.powerGetRaw() : -999));
-            // 关键：iData 模组可能把 SELECT(EPC) 过滤写入 NVRAM、重启都清不掉；且对空 mask 的 filterSet(on=0) 直接忽略，
-            // 导致「不过滤」盘点只回传被过滤的 EPC → 表现为盘点 0 读（雷达因自己又设了过滤反而能读）。
-            // 改用「匹配全部」过滤(lenBits=0, on=true)：无论模组卡在哪个残留 EPC 过滤，盘点都会回传所有标签。
-            if (adp != null) { boolean m = adp.setEpcFilter("", 0, 0, true); Log.i(TAG, "PURE_TEST: 设匹配全部过滤 ret=" + m); }
+            // 关键：iData 模组把 SELECT 过滤/会话/算法持久化在固件，普通 filterSet 清不掉；
+            // 这里用 resetDefaultSetting() 彻底复位（与 iUHF 每次启动一致），随后重设功率。
+            if (adp != null) {
+                try { adp.resetModule(); Log.i(TAG, "PURE_TEST: resetModule 成功（已清残留 SELECT/会话）"); }
+                catch (Throwable e) { Log.w(TAG, "PURE_TEST: resetModule 失败（忽略）", e); }
+                adp.setPower(Math.min(getParam("power", 30), 20));
+            }
             sdk.setInventoryMode(1);
             java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
             java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
@@ -1413,7 +1416,13 @@ public class MainActivity extends AppCompatActivity {
         if (tvInvCount != null) tvInvCount.setText("0 个");
         if (tvLastEpc != null) tvLastEpc.setText("—");
         inventorying = true;
-        if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setEpcFilter("", 0, 0, false); // 清残留 SELECT 过滤（NVRAM 残留会滤掉其它标签）
+        // 盘点前彻底复位模组（清掉定位/读写残留的 SELECT 过滤、会话、盘存算法），
+        // 与 iUHF 每次启动都能读到标签的行为一致；reset 会把功率复位，故随后重新设回 20dBm。
+        if (sdk instanceof IdataUhfAdapter) {
+            try { ((IdataUhfAdapter) sdk).resetModule(); }
+            catch (Throwable e) { Log.w(TAG, "startInventory: resetModule 失败（忽略，继续）", e); }
+        }
+        sdk.setPower(Math.min(getParam("power", 30), 20));
         sdk.setInventoryMode(1);          // 多标签盘点模式
         sdk.startInventory(makeInventoryCallback());
         showInventoryDialog();

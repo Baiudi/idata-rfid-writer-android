@@ -369,9 +369,20 @@ public class IdataUhfAdapter implements RfidSdk {
                 ensureSdk();
                 Object r = callIface("powerOn");
                 ok = r instanceof Boolean && (Boolean) r;
+                Log.i(TAG, "init: powerOn=" + ok + " moduleType=" + mModuleType + " bindPath=" + mBindPath);
+                // 关键修复：iData 模组把 SELECT 过滤/会话/盘存算法等状态持久化在固件里，
+                // 本 App 之前做定位/读写设过的 EPC 过滤会残留，导致「不过滤盘点」永远 0 读；
+                // resetDefaultSetting() 恢复到出厂默认（清掉一切残留），与 iUHF 每次启动能读到一致。
+                try {
+                    resetModule();
+                    Log.i(TAG, "init: resetDefaultSetting 已调用，已清掉残留 SELECT/会话/算法");
+                } catch (Throwable e2) {
+                    Log.w(TAG, "init: resetDefaultSetting 失败（忽略，继续）", e2);
+                }
+                // reset 可能把上电状态也复位，确保仍上电
+                try { callIface("powerOn"); } catch (Throwable ignore) { /* best effort */ }
                 msg = ok ? ("UHF 已连接（绑定路径：" + mBindPath + "）")
                         : "UHF 初始化失败（powerOn 返回 false，请确认设备 UHF 模块正常）";
-                Log.i(TAG, "init: powerOn=" + ok + " moduleType=" + mModuleType + " bindPath=" + mBindPath);
             } catch (Throwable e) {
                 msg = "UHF 初始化异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
                 Log.e(TAG, "init failed", e);
@@ -412,6 +423,36 @@ public class IdataUhfAdapter implements RfidSdk {
             callIface("inventoryModeSet", mode, mode != 0);
             Log.i(TAG, "setInventoryMode: mode=" + mode + " flag=" + (mode != 0));
         } catch (Throwable ignore) { /* best effort */ }
+    }
+
+    /**
+     * 把 UHF 模组恢复到出厂默认设置（resetDefaultSetting）。
+     * iData 模组会把 SELECT 过滤 / 会话(Session) / 盘存算法(Q) 等状态持久化在固件里，
+     * 普通 filterSet(...,on=false) 往往清不掉残留的 SELECT —— 导致后续「不过滤盘点」仍被旧的
+     * EPC 过滤挡成 0 读（本 App 做定位/读写时设过 SELECT，最易踩坑）。
+     * resetDefaultSetting() 一次性清掉所有残留，与 iUHF 每次启动都能读到标签的行为一致。
+     * 注意：resetDefaultSetting 可能把功率/频率也复位，调用方需在其后重新 setPower / setInventoryMode。
+     */
+    public void resetModule() throws Exception {
+        if (mRawManager != null) {
+            for (java.lang.reflect.Method m : mRawManager.getClass().getMethods()) {
+                if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
+                    m.invoke(mRawManager);
+                    Log.i(TAG, "resetModule: 已对 mRawManager 调用 resetDefaultSetting");
+                    return;
+                }
+            }
+        }
+        if (mUhf != null) {
+            for (java.lang.reflect.Method m : mUhfClass.getMethods()) {
+                if (m.getName().equals("resetDefaultSetting") && m.getParameterTypes().length == 0) {
+                    m.invoke(mUhf);
+                    Log.i(TAG, "resetModule: 已对 mUhf 调用 resetDefaultSetting");
+                    return;
+                }
+            }
+        }
+        throw new NoSuchMethodException("resetDefaultSetting");
     }
 
     /**
