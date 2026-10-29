@@ -585,9 +585,10 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
             Log.i(TAG, "PURE_TEST: 开始（不调 setPower / 不过滤）powerGet=" + (adp != null ? adp.powerGetRaw() : -999));
-            // 关键：先清掉模组里可能残留的 SELECT(EPC) 过滤（部分 iData 模组把过滤写入 NVRAM，重启都清不掉，
-            // 会导致「不过滤」的盘点只回传被过滤的 EPC，把其它标签全滤掉 → 表现为盘点 0 读）。
-            if (adp != null) { boolean clr = adp.setEpcFilter("", 0, 0, false); Log.i(TAG, "PURE_TEST: 清残留过滤 ret=" + clr); }
+            // 关键：iData 模组可能把 SELECT(EPC) 过滤写入 NVRAM、重启都清不掉；且对空 mask 的 filterSet(on=0) 直接忽略，
+            // 导致「不过滤」盘点只回传被过滤的 EPC → 表现为盘点 0 读（雷达因自己又设了过滤反而能读）。
+            // 改用「匹配全部」过滤(lenBits=0, on=true)：无论模组卡在哪个残留 EPC 过滤，盘点都会回传所有标签。
+            if (adp != null) { boolean m = adp.setEpcFilter("", 0, 0, true); Log.i(TAG, "PURE_TEST: 设匹配全部过滤 ret=" + m); }
             sdk.setInventoryMode(1);
             java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
             java.util.concurrent.CountDownLatch l = new java.util.concurrent.CountDownLatch(1);
