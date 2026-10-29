@@ -224,6 +224,9 @@ public class IdataUhfAdapter implements RfidSdk {
     /** 从原始串中提取 EPC：取最长的 hex 连续段（≥8位），对前后缀不可见字符/杂质免疫 */
     private static final java.util.regex.Pattern HEX_RUN =
             java.util.regex.Pattern.compile("[0-9A-Fa-f]{8,}");
+    /** RSSI 数值段（可带负号与小数） */
+    private static final java.util.regex.Pattern NUM_RUN =
+            java.util.regex.Pattern.compile("-?\\d+(\\.\\d+)?");
 
     private static String extractEpc(String s) {
         if (s == null) return null;
@@ -248,16 +251,26 @@ public class IdataUhfAdapter implements RfidSdk {
         String s = raw.trim();
         if (s.isEmpty()) return t;
         java.util.regex.Matcher m = HEX_RUN.matcher(s);
-        String best = null; int bestEnd = -1;
+        String best = null; int bestEnd = -1, bestStart = -1;
         while (m.find()) {
             String c = m.group();
-            if (best == null || c.length() > best.length()) { best = c; bestEnd = m.end(); }
+            if (best == null || c.length() > best.length()) {
+                best = c; bestEnd = m.end(); bestStart = m.start();
+            }
         }
         if (best != null && best.length() >= 8 && (best.length() % 2) == 0) {
             t.epc = best.toUpperCase(java.util.Locale.US);
-            String rest = s.substring(Math.max(bestEnd, 0));
-            java.util.regex.Matcher rm = java.util.regex.Pattern.compile("-?\\d+(\\.\\d+)?").matcher(rest);
-            if (rm.find()) t.rssi = rm.group();
+            // RSSI 可能跟在 EPC 后，也可能排在 EPC 前；只看后面会漏掉大半（实测同标签时而拿到 -30 时而为空）
+            String rssi = null;
+            java.util.regex.Matcher rm = NUM_RUN.matcher(s.substring(bestEnd));
+            if (rm.find()) rssi = rm.group();
+            if (rssi == null && bestStart > 0) {
+                java.util.regex.Matcher pm = NUM_RUN.matcher(s.substring(0, bestStart));
+                String last = null;
+                while (pm.find()) last = pm.group();
+                rssi = last;
+            }
+            t.rssi = rssi == null ? "" : rssi;
         }
         return t;
     }
@@ -439,10 +452,16 @@ public class IdataUhfAdapter implements RfidSdk {
                         String epc = extractEpc(s);
                         if (epc == null) { parsedFail++; continue; }
                         if (!cur.containsKey(epc)) {
+                            // 模组缓存排列可能是 [EPC,RSSI] 也可能是 [RSSI,EPC]，
+                            // 只取后一个邻居会漏掉大半（实测同标签时而拿到 -30 时而为空），故双向取纯数字邻居
                             String rssi = null;
                             if (i + 1 < arr.length && arr[i + 1] != null) {
                                 String nxt = arr[i + 1].trim();
-                                if (nxt.matches("-?\\d+(\\.\\d+)?")) { rssi = nxt; i++; }
+                                if (nxt.matches("-?\\d+(\\.\\d+)?")) rssi = nxt;
+                            }
+                            if (rssi == null && i > 0 && arr[i - 1] != null) {
+                                String prv = arr[i - 1].trim();
+                                if (prv.matches("-?\\d+(\\.\\d+)?")) rssi = prv;
                             }
                             cur.put(epc, rssi);
                         }

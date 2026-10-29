@@ -1486,6 +1486,8 @@ public class MainActivity extends AppCompatActivity {
         final float[] best = {-120f};
         // 本窗口是否读到目标标签（与是否有 RSSI 数值分开：部分模组只回 EPC 不回 RSSI）
         final boolean[] matched = {false};
+        // 最近一次真实拿到的 RSSI：本窗口没拿到时沿用，避免雷达在「有值/无值」之间跳动
+        final float[] lastValid = {-120f};
         Log.i(TAG, "LOCATE: 开启连续盘点定位 目标EPC=" + epc + " 功率=" + (int) txPower + "dBm");
 
         // 连续盘点常开：模块每回传一次就刷新 best，避免每轮 start/stop 造成丢数据
@@ -1517,16 +1519,17 @@ public class MainActivity extends AppCompatActivity {
                         radar.setRssiDbm(-120f, Float.NaN);
                         tvRssi.setText("信号值：未捕捉到目标标签（请移动设备靠近）");
                         tvDist.setText("估算距离：--");
-                    } else if (rssi <= -120f) {
-                        // 读到了目标，但模组未回传 RSSI 数值：给个中值，保证雷达上能看到目标
-                        radar.setRssiDbm(RSSI_FALLBACK, Float.NaN);
-                        tvRssi.setText("信号值：已锁定目标（模组未回传 RSSI 数值）");
-                        tvDist.setText("估算距离：--");
                     } else {
-                        float dist = FormatUtil.estimateDistanceMeters(rssi, txPower);
-                        radar.setRssiDbm(rssi, dist);
-                        int sig = Math.max(0, Math.min(254, Math.round((rssi + 90f) * 254f / 60f)));
-                        tvRssi.setText("信号值：" + sig + " / 254（" + Math.round(rssi) + " dBm）"
+                        // 本窗口拿到真实 RSSI 才更新；否则沿用上次读数，拿不到时用兜底值
+                        boolean fresh = rssi > -120f;
+                        if (fresh) lastValid[0] = rssi;
+                        float eff = fresh ? rssi
+                                : (lastValid[0] > -120f ? lastValid[0] : RSSI_FALLBACK);
+                        float dist = FormatUtil.estimateDistanceMeters(eff, txPower);
+                        radar.setRssiDbm(eff, dist);
+                        int sig = Math.max(0, Math.min(254, Math.round((eff + 90f) * 254f / 60f)));
+                        tvRssi.setText("信号值：" + sig + " / 254（" + Math.round(eff) + " dBm）"
+                                + (fresh ? "" : "（沿用上次读数）")
                                 + (sig >= 220 ? "  → 就在附近！" : ""));
                         tvDist.setText("估算距离：" + FormatUtil.formatDistance(dist));
                     }
