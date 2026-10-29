@@ -420,7 +420,7 @@ public class MainActivity extends AppCompatActivity {
                 uiHandler.postDelayed(() -> sdk.init(module, (ok2, msg2) -> runOnUiThread(() -> {
                     setStatus(msg2);
                     if (ok2) {
-                        sdk.setPower(getParam("power", 30));
+                        sdk.setPower(Math.min(getParam("power", 30), 20)); // 实测 30dBm 会让该模组读不到标签，上限 20dBm
                         sdk.setInventoryMode(0);
                     }
                 })), 800);
@@ -429,7 +429,7 @@ public class MainActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 setStatus(msg);
                 if (ok) {
-                    sdk.setPower(getParam("power", 30));
+                    sdk.setPower(Math.min(getParam("power", 30), 20)); // 实测 30dBm 会让该模组读不到标签，上限 20dBm
                     sdk.setInventoryMode(0);
                 }
             });
@@ -538,7 +538,7 @@ public class MainActivity extends AppCompatActivity {
      *  同时调用设备预装 readFullEpcTag 并打印其 Bundle（fullEpc/epc/pc/epcWordCount）。 */
     private void doReadTest() {
         if (!sdk.isConnected()) { Log.w(TAG, "READ_TEST: 仍未连接 UHF，跳过"); return; }
-        sdk.setPower(getParam("power", 30));
+        sdk.setPower(Math.min(getParam("power", 30), 20)); // 实测 30dBm 会让该模组读不到标签，上限 20dBm
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             if (tag == null) {
@@ -1067,7 +1067,7 @@ public class MainActivity extends AppCompatActivity {
     /** 检测天线范围内【唯一】一张标签，并在界面显示其 TID/EPC（不写入） */
     private void detectSingle() {
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
-        sdk.setPower(getParam("power", 30));
+        sdk.setPower(Math.min(getParam("power", 30), 20)); // 实测 30dBm 会让该模组读不到标签，上限 20dBm
         new Thread(() -> {
             TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
             lastDetectedTag = tag;
@@ -1094,7 +1094,7 @@ public class MainActivity extends AppCompatActivity {
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
         reading = true;
         setStatus("正在读取标签…");
-        sdk.setPower(getParam("power", 30));
+        sdk.setPower(Math.min(getParam("power", 30), 20)); // 实测 30dBm 会让该模组读不到标签，上限 20dBm
         new Thread(() -> {
             try {
                 TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
@@ -1450,8 +1450,15 @@ public class MainActivity extends AppCompatActivity {
         // 定位依赖连续盘点回传 RSSI：必须用 mode=1（flag=true）开启连续盘点模式。
         // 此前这里误用 mode=0（flag=false），模块不回传标签 → 雷达恒显示「未捕捉到目标标签」。
         sdk.setInventoryMode(1);
-        final float txPower = getParam("power", 30); // 定位用高功率，读得远
-        sdk.setPower((int) txPower);
+        // 实测（LOCATE_TEST 参数扫描）：把功率设成 30dBm 后该模组盘不到任何标签
+        // （不过滤/不设功率 命中 6 次，不过滤/功率30 命中 0 次），故定位不调整功率；
+        // 距离估算仍需要参考功率，直接读模组当前功率（实测 20dBm）
+        float powerRef = getParam("power", 30);
+        if (sdk instanceof IdataUhfAdapter) {
+            int cur = ((IdataUhfAdapter) sdk).powerGetRaw();
+            if (cur > 0) powerRef = cur;
+        }
+        final float txPower = powerRef;
         // 开启 EPC 过滤（SELECT）：该模组群读缓冲区只保留「最近读到的约 2 张」，
         // 多标签场景下目标标签常不在窗口内（实测盘点可见 4 张、定位缓存却是另外 2 张），
         // 开启过滤后缓冲区只会有目标标签，雷达才能稳定命中。
@@ -1547,15 +1554,27 @@ public class MainActivity extends AppCompatActivity {
         });
 
         new Thread(() -> {
-            int round = 0;
+            int round = 0, missStreak = 0;
+            boolean filterOn = true;
             while (locating) {
                 // 取本窗口最强值后清空，使设备远离时能及时反映为「未捕捉」
                 final float rssi = best[0];
                 final boolean hit = matched[0];
                 best[0] = -120f;
                 matched[0] = false;
+                if (!hit) missStreak++; else missStreak = 0;
+                // 过滤下连续 5 个窗口（约 2s）都没命中：多半是该标签 EPC 实际位长与 lenBits 不符
+                // （例如 128 位 EPC 被 96 位过滤条件全部滤掉），自动关掉过滤改为全量匹配
+                if (filterOn && missStreak >= 5) {
+                    filterOn = false;
+                    if (sdk instanceof IdataUhfAdapter) {
+                        ((IdataUhfAdapter) sdk).setEpcFilter("", 0, 0, false);
+                    }
+                    Log.i(TAG, "LOCATE: 过滤下连续 5 个窗口无命中，自动关闭 EPC 过滤改为全量匹配");
+                }
                 if ((++round % 5) == 1) {
-                    Log.i(TAG, "LOCATE: 窗口#" + round + " 命中=" + hit + " rssi=" + rssi);
+                    Log.i(TAG, "LOCATE: 窗口#" + round + " 命中=" + hit + " rssi=" + rssi
+                            + " 过滤=" + filterOn);
                 }
                 runOnUiThread(() -> {
                     if (!locating) return;
