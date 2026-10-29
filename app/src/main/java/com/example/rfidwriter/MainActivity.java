@@ -93,6 +93,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_POWER_SWEEP = "com.example.rfidwriter.action.POWER_SWEEP";
     /** 极简真值测试：连接后【完全不改 freq/session】，只读默认配置并盘点，区分「配置覆盖搞坏」还是「模组被复位写死」 */
     public static final String ACTION_PURE_TEST_MIN = "com.example.rfidwriter.action.PURE_TEST_MIN";
+    /** 配置穷举自检：不改默认配置，先 dump 全部模块/协议参数，再逐个参数扫描，找出 iUHF 能读而本 App 读不到的差异配置 */
+    public static final String ACTION_DIAG_SWEEP = "com.example.rfidwriter.action.DIAG_SWEEP";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -114,6 +116,7 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean invPaused = false;
     private volatile boolean locating = false;
     private volatile boolean reading = false;       // 读取中（防止手柄连按并发读取）
+    private int mDiagStep = 0;                       // DIAG_SWEEP 步骤计数
     private boolean locateFromInventory = false;   // 本次定位是否由盘点弹窗发起（关闭后自动回盘点）
 
     // ----------------- 手柄按键（设备扳机/扫描键）映射 -----------------
@@ -160,6 +163,7 @@ public class MainActivity extends AppCompatActivity {
                 else if (ACTION_POWER_TEST.equals(a)) runPowerTest();
                 else if (ACTION_POWER_SWEEP.equals(a)) runPowerSweep();
                 else if (ACTION_PURE_TEST_MIN.equals(a)) runPureTestMin();
+                else if (ACTION_DIAG_SWEEP.equals(a)) runDiagSweep();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
@@ -171,6 +175,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_POWER_TEST);
         testFilter.addAction(ACTION_POWER_SWEEP);
         testFilter.addAction(ACTION_PURE_TEST_MIN);
+        testFilter.addAction(ACTION_DIAG_SWEEP);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -498,6 +503,11 @@ public class MainActivity extends AppCompatActivity {
         else { Log.i(TAG, "POWER_SWEEP: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPowerSweep(), 3000); }
     }
 
+    private void runDiagSweep() {
+        if (sdk.isConnected()) doDiagSweep();
+        else { Log.i(TAG, "DIAG_SWEEP: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doDiagSweep(), 3000); }
+    }
+
     /** 功率扫描：逐级设置功率并各盘 2.5s，记录每档读到的唯一 EPC 数。
      *  用于定位「昨天能读的小标签今天读不到」是否由功率上限(20dBm)过低导致。
      *  注意：p=30 若令模组掉电(powerGet<0)会立即停止并建议重启。 */
@@ -675,6 +685,92 @@ public class MainActivity extends AppCompatActivity {
                         + (c2.isEmpty() ? " (0 读)" : " EPC=" + c2.keySet()));
             }
             Log.i(TAG, "PURE_TEST_MIN: 结束");
+        }).start();
+    }
+
+    /** DIAG_SWEEP 内部：对当前模组配置盘 2.2s，返回唯一 EPC 数并带步骤号打印 */
+    private int diagInvStep(String label) {
+        java.util.Set<String> seen = java.util.Collections.newSetFromMap(
+                new java.util.concurrent.ConcurrentHashMap<String, Boolean>());
+        java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
+        sdk.startInventory(new RfidSdk.InventoryCallback() {
+            @Override public void onTag(TagInfo t) { if (t.epc != null && !t.epc.isEmpty()) seen.add(t.epc); }
+            @Override public void onEnd() { latch.countDown(); }
+        });
+        try { latch.await(2200, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+        sdk.stopInventory();
+        int n = seen.size();
+        mDiagStep++;
+        Log.i(TAG, "DIAG_SWEEP: [" + mDiagStep + "] " + label + " -> 唯一EPC=" + n
+                + (n > 0 ? " EPC=" + seen.iterator().next() : " (0读)"));
+        return n;
+    }
+
+    /**
+     * 配置穷举自检：不调用 resetDefaultSetting（保留模组当前/出厂状态，因为复位已被证明无助），
+     * 先 dump 全部模块/协议参数，再逐个参数扫描，找出 iUHF 能读而本 App 读不到的差异配置。
+     * 每个参数档盘 2.2s，统计唯一 EPC 数。扫描基线：freqMode=1(中国920-925)/session=0/power=20/inventoryMode=1。
+     */
+    private void doDiagSweep() {
+        if (!(sdk instanceof IdataUhfAdapter)) { Log.w(TAG, "DIAG_SWEEP: sdk 非 IdataUhfAdapter，跳过"); return; }
+        final IdataUhfAdapter adp = (IdataUhfAdapter) sdk;
+        mDiagStep = 0;
+        new Thread(() -> {
+            // ---- 阶段0：dump 全部参数（不改任何配置）----
+            Log.i(TAG, "DIAG_SWEEP: === 阶段0 当前模块/协议参数 dump ===");
+            Log.i(TAG, "DIAG_SWEEP: moduleType=" + adp.getUHFModuleType()
+                    + " cacheModule=" + adp.getCacheUHFModule()
+                    + " freqMode=" + adp.getFreqMode() + " session=" + adp.getSessionMode()
+                    + " powerGet=" + adp.powerGetRaw() + " isPowerOn=" + adp.isPowerOnRaw());
+            Log.i(TAG, "DIAG_SWEEP: inventoryMode=" + adp.getInventoryMode()
+                    + " inventoryModel=" + adp.getInventoryModel()
+                    + " linkParameter=" + adp.getLinkParameter()
+                    + " rfidProtocol=" + adp.getRFIDProtocolStandard()
+                    + " gen2Target=" + adp.getGen2Target() + " gen2Decode=" + adp.getGen2Decode()
+                    + " gen2xMode=" + adp.getGen2xMode() + " inventoryExMode=" + adp.getInventoryExMode()
+                    + " performanceMode=" + adp.getPerformanceMode() + " cwStatus=" + adp.getCWStatus());
+            Log.i(TAG, "DIAG_SWEEP: tagFocus=" + adp.getTagFocus() + " fastID=" + adp.getFastID()
+                    + " frequenceRange=" + java.util.Arrays.toString(adp.getFrequenceRange())
+                    + " inventoryWaitTime=" + java.util.Arrays.toString(adp.getInventoryWaitTime()));
+
+            // 基线配置
+            try { adp.setFreqMode(1); } catch (Throwable ignore) {}
+            try { adp.setSession(0); } catch (Throwable ignore) {}
+            sdk.setPower(20);
+            sdk.setInventoryMode(1);
+
+            // ---- 阶段A：纯基线盘 2.2s（真值）----
+            diagInvStep("基线(仅freq1/session0/power20/mode1)");
+
+            // ---- 阶段B：协议标准 ----
+            for (int v : new int[]{0, 1, 2}) { adp.setRFIDProtocolStandard(v); diagInvStep("rfidProtocol=" + v); }
+            // ---- 阶段C：链路参数 ----
+            for (int v : new int[]{0,1,2,3,4,5,6,7,8}) { adp.setLinkParameter(v); diagInvStep("linkParameter=" + v); }
+            // ---- 阶段D：Gen2 Target / Decode / xMode ----
+            for (int v : new int[]{0,1,2,3}) { adp.setGen2Target(v); diagInvStep("gen2Target=" + v); }
+            for (int v : new int[]{0,1,2}) { adp.setGen2Decode(v); diagInvStep("gen2Decode=" + v); }
+            for (int v : new int[]{0,1}) { adp.setGen2xMode(v); diagInvStep("gen2xMode=" + v); }
+            // ---- 阶段E：盘点模型/模式/性能/扩展 ----
+            for (int v : new int[]{0,1,2,3}) { adp.setInventoryModel(v); diagInvStep("inventoryModel=" + v); }
+            for (int v : new int[]{0,1}) { adp.setPerformanceMode(v); diagInvStep("performanceMode=" + v); }
+            for (int v : new int[]{0,1}) { adp.setInventoryExMode(v); diagInvStep("inventoryExMode=" + v); }
+            // ---- 阶段F：TagFocus / FastID ----
+            adp.setTagFocus(true); diagInvStep("tagFocus=true");
+            adp.setTagFocus(false); diagInvStep("tagFocus=false");
+            adp.setFastID(true); diagInvStep("fastID=true");
+            adp.setFastID(false); diagInvStep("fastID=false");
+            // ---- 阶段G：缓存模块切换（本机 moduleType + 几个 iUHF 已知模块串）----
+            String mt = adp.getUHFModuleType();
+            Log.i(TAG, "DIAG_SWEEP: 本机 getUHFModuleType=" + mt);
+            adp.setCacheUHFModule(mt);
+            try { adp.powerOnRaw(); } catch (Throwable ignore) {}
+            diagInvStep("cacheModule=" + mt);
+            for (String s : new String[]{"RFM_103_EX","PROF0_R2000","PR_2000","R2000","RFU","RFM_1_EX-SFM"}) {
+                adp.setCacheUHFModule(s);
+                try { adp.powerOnRaw(); } catch (Throwable ignore) {}
+                diagInvStep("cacheModule=" + s);
+            }
+            Log.i(TAG, "DIAG_SWEEP: 结束（哪个档有读数，即 iUHF 工作配置）");
         }).start();
     }
 

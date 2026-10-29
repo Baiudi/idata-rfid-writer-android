@@ -425,6 +425,101 @@ public class IdataUhfAdapter implements RfidSdk {
         } catch (Throwable ignore) { /* best effort */ }
     }
 
+    // ------------------------------------------------------------------
+    // 通用反射调用 + 诊断用配置封装（供 DIAG_SWEEP 穷举 iUHF 可用配置）
+    // ------------------------------------------------------------------
+
+    /**
+     * 通用反射调用：依次尝试 mRawManager(UHFManager 真实实例) -> mIface(UHFInterface) -> mUhf(系统服务代理)。
+     * 按「方法名 + 参数个数 + 类型兼容」匹配。很多方法只在 UHFManager 上存在（如 inventoryModelGet/Set），
+     * 而 mIface(UHFInterface) 缺这些方法，所以优先打 mRawManager。
+     */
+    private Object invokeBest(String name, Object... args) throws Exception {
+        Exception last = null;
+        Object[][] tries = {
+                {mRawManager, mRawManager != null ? mRawManager.getClass() : null},
+                {mIface, mIfaceClass},
+                {mUhf, mUhfClass}
+        };
+        for (Object[] t : tries) {
+            Object target = t[0];
+            Class<?> clazz = (Class<?>) t[1];
+            if (target == null || clazz == null) continue;
+            for (java.lang.reflect.Method m : clazz.getMethods()) {
+                if (!m.getName().equals(name) || m.getParameterTypes().length != args.length) continue;
+                Class<?>[] pts = m.getParameterTypes();
+                boolean ok = true;
+                for (int i = 0; i < pts.length; i++) {
+                    if (args[i] == null) continue;
+                    if (!box(pts[i]).isAssignableFrom(args[i].getClass())) { ok = false; break; }
+                }
+                if (!ok) continue;
+                try {
+                    return m.invoke(target, args);
+                } catch (java.lang.reflect.InvocationTargetException ite) {
+                    Throwable c = ite.getCause();
+                    if (c instanceof Exception) last = (Exception) c; else last = new RuntimeException(c);
+                } catch (IllegalAccessException iae) {
+                    last = iae;
+                }
+            }
+        }
+        if (last != null) throw last;
+        throw new NoSuchMethodException(name + " arity=" + args.length);
+    }
+
+    private int getInt(String name, int def) {
+        try { Object o = invokeBest(name); return o instanceof Number ? ((Number) o).intValue() : def; }
+        catch (Throwable e) { return def; }
+    }
+    private String getStr(String name) {
+        try { Object o = invokeBest(name); return o == null ? "" : String.valueOf(o); }
+        catch (Throwable e) { return ""; }
+    }
+    private boolean getBool(String name) {
+        try { Object o = invokeBest(name); return o instanceof Boolean && (Boolean) o; }
+        catch (Throwable e) { return false; }
+    }
+    private void setVoid(String name, Object... args) {
+        try { invokeBest(name, args); } catch (Throwable ignore) {}
+    }
+
+    // ---- 诊断用：模块与协议相关 getter/setter ----
+    public String getUHFModuleType() { return getStr("getUHFModuleType"); }
+    public String getCacheUHFModule() { return getStr("getCacheUHFModule"); }
+    public void setCacheUHFModule(String s) { setVoid("setCacheUHFModule", s); }
+    public int getRFIDProtocolStandard() { return getInt("getRFIDProtocolStandard", -999); }
+    public void setRFIDProtocolStandard(int v) { setVoid("setRFIDProtocolStandard", v); }
+    public int getLinkParameter() { return getInt("getLinkParameter", -999); }
+    public void setLinkParameter(int v) { setVoid("setLinkParameter", v); }
+    public int getGen2Target() { return getInt("getGen2Target", -999); }
+    public void setGen2Target(int v) { setVoid("setGen2Target", v); }
+    public int getGen2Decode() { return getInt("getGen2Decode", -999); }
+    public void setGen2Decode(int v) { setVoid("setGen2Decode", v); }
+    public int getGen2xMode() { return getInt("getGen2xMode", -999); }
+    public void setGen2xMode(int v) { setVoid("setGen2xMode", v); }
+    public int getInventoryExMode() { return getInt("getInventoryExMode", -999); }
+    public void setInventoryExMode(int v) { setVoid("setInventoryExMode", v); }
+    public int getPerformanceMode() { return getInt("getPerformanceMode", -999); }
+    public void setPerformanceMode(int v) { setVoid("setPerformanceMode", v); }
+    public int getInventoryModel() { return getInt("inventoryModelGet", -999); }
+    public void setInventoryModel(int v) { setVoid("inventoryModelSet", v, false); }
+    public int getInventoryMode() { return getInt("inventoryModeGet", -999); }
+    public boolean getTagFocus() { return getBool("getTagFocus"); }
+    public void setTagFocus(boolean b) { setVoid("setTagFocus", b); }
+    public boolean getFastID() { return getBool("getFastID"); }
+    public void setFastID(boolean b) { setVoid("setFastID", b); }
+    public void setFasTidMode(int v) { setVoid("setFasTidMode", v); }
+    public int getCWStatus() { return getInt("getCWStatus", -999); }
+    public int[] getFrequenceRange() {
+        try { Object o = invokeBest("frequenceRangeGet"); return o instanceof int[] ? (int[]) o : new int[0]; }
+        catch (Throwable e) { return new int[0]; }
+    }
+    public int[] getInventoryWaitTime() {
+        try { Object o = invokeBest("inventoryWaitTimeGet"); return o instanceof int[] ? (int[]) o : new int[0]; }
+        catch (Throwable e) { return new int[0]; }
+    }
+
     /**
      * 把 UHF 模组恢复到出厂默认设置（resetDefaultSetting）。
      * iData 模组会把 SELECT 过滤 / 会话(Session) / 盘存算法(Q) 等状态持久化在固件里，
