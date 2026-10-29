@@ -91,6 +91,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_POWER_TEST = "com.example.rfidwriter.action.POWER_TEST";
     /** 功率扫描钩子：逐级试功率(0/12/16/20/26/30dBm)并各盘 2.5s，确认「昨天能读的小标签」在哪个功率档能被读到 */
     public static final String ACTION_POWER_SWEEP = "com.example.rfidwriter.action.POWER_SWEEP";
+    /** 极简真值测试：连接后【完全不改 freq/session】，只读默认配置并盘点，区分「配置覆盖搞坏」还是「模组被复位写死」 */
+    public static final String ACTION_PURE_TEST_MIN = "com.example.rfidwriter.action.PURE_TEST_MIN";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -157,6 +159,7 @@ public class MainActivity extends AppCompatActivity {
                 else if (ACTION_PURE_TEST.equals(a)) runPureTest();
                 else if (ACTION_POWER_TEST.equals(a)) runPowerTest();
                 else if (ACTION_POWER_SWEEP.equals(a)) runPowerSweep();
+                else if (ACTION_PURE_TEST_MIN.equals(a)) runPureTestMin();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
@@ -167,6 +170,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_PURE_TEST);
         testFilter.addAction(ACTION_POWER_TEST);
         testFilter.addAction(ACTION_POWER_SWEEP);
+        testFilter.addAction(ACTION_PURE_TEST_MIN);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -476,6 +480,14 @@ public class MainActivity extends AppCompatActivity {
         else { Log.i(TAG, "PURE_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPureTest(), 3000); }
     }
 
+    /** 极简真值测试：连接后完全不改 freq/session，只读默认配置并盘点 3s；
+     *  随后再扫描 freqMode 0~4（仅设 freq、不复位）各盘 2.2s。用于区分：
+     *  「是我们强制改 freq 覆盖掉好配置」(默认态能读) 还是「模组被 resetDefaultSetting 写死」(全 0)。 */
+    private void runPureTestMin() {
+        if (sdk.isConnected()) doPureTestMin();
+        else { Log.i(TAG, "PURE_TEST_MIN: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPureTestMin(), 3000); }
+    }
+
     private void runPowerTest() {
         if (sdk.isConnected()) doPowerTest();
         else { Log.i(TAG, "POWER_TEST: 尚未连接，先触发连接…"); connect(); uiHandler.postDelayed(() -> doPowerTest(), 3000); }
@@ -624,6 +636,45 @@ public class MainActivity extends AppCompatActivity {
                         + (n > 0 ? " EPC首条=" + cnt.keySet().iterator().next() : " (0 读)"));
             }
             Log.i(TAG, "PURE_TEST: 频率区间扫描结束（哪个 freqMode 有读数，即正确频段）");
+        }).start();
+    }
+
+    /** 极简真值测试主体：先不改任何 freq/session 盘点 3s（用模组当前/默认配置），再扫描 freqMode 0~4 各 2.2s。 */
+    private void doPureTestMin() {
+        if (!sdk.isConnected()) { Log.w(TAG, "PURE_TEST_MIN: 仍未连接，跳过"); return; }
+        final IdataUhfAdapter adp = (sdk instanceof IdataUhfAdapter) ? (IdataUhfAdapter) sdk : null;
+        new Thread(() -> {
+            Log.i(TAG, "PURE_TEST_MIN: 默认 freqMode=" + (adp != null ? adp.getFreqMode() : -1)
+                    + " session=" + (adp != null ? adp.getSessionMode() : -1)
+                    + " powerGet=" + (adp != null ? adp.powerGet() : -1));
+            // 阶段A：完全不改 freq/session，仅 setPower + inventoryMode(1) + 盘点 3s
+            sdk.setPower(Math.min(getParam("power", 30), 20));
+            sdk.setInventoryMode(1);
+            java.util.Map<String, Integer> cnt = new java.util.concurrent.ConcurrentHashMap<>();
+            sdk.startInventory(new RfidSdk.InventoryCallback() {
+                @Override public void onTag(TagInfo t) { if (t.epc != null && !t.epc.isEmpty()) cnt.merge(t.epc, 1, Integer::sum); }
+                @Override public void onEnd() {}
+            });
+            try { Thread.sleep(3000); } catch (InterruptedException ignored) {}
+            sdk.stopInventory(); sdk.setInventoryMode(0);
+            Log.i(TAG, "PURE_TEST_MIN: 【默认配置,不改freq/session】唯一EPC=" + cnt.size()
+                    + (cnt.isEmpty() ? " (0 读)" : " EPC=" + cnt.keySet()));
+            // 阶段B：仅设 freqMode 0~4（不复位），各盘 2.2s
+            int[] freqs = {0, 1, 2, 3, 4};
+            for (int f : freqs) {
+                if (adp != null) { try { adp.setFreqMode(f); } catch (Throwable e) { Log.w(TAG, "PURE_TEST_MIN: setFreqMode(" + f + ") 失败", e); } }
+                sdk.setInventoryMode(1);
+                java.util.Map<String, Integer> c2 = new java.util.concurrent.ConcurrentHashMap<>();
+                sdk.startInventory(new RfidSdk.InventoryCallback() {
+                    @Override public void onTag(TagInfo t) { if (t.epc != null && !t.epc.isEmpty()) c2.merge(t.epc, 1, Integer::sum); }
+                    @Override public void onEnd() {}
+                });
+                try { Thread.sleep(2200); } catch (InterruptedException ignored) {}
+                sdk.stopInventory(); sdk.setInventoryMode(0);
+                Log.i(TAG, "PURE_TEST_MIN: 【仅设freqMode=" + f + "】唯一EPC=" + c2.size()
+                        + (c2.isEmpty() ? " (0 读)" : " EPC=" + c2.keySet()));
+            }
+            Log.i(TAG, "PURE_TEST_MIN: 结束");
         }).start();
     }
 
