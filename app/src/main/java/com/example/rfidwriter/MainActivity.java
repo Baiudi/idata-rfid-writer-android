@@ -1576,8 +1576,13 @@ public class MainActivity extends AppCompatActivity {
         // 开启 EPC 过滤（SELECT）：该模组群读缓冲区只保留「最近读到的约 2 张」，
         // 多标签场景下目标标签常不在窗口内（实测盘点可见 4 张、定位缓存却是另外 2 张），
         // 开启过滤后缓冲区只会有目标标签，雷达才能稳定命中。
+        // 注意：本模组对 128 位 EPC 用 lenBits=128 过滤会直接返回 0（LOCATE_TEST 实测
+        // 「过滤32+128b」命中 0，而「过滤32+96b」命中 17~37、不过滤命中 36），
+        // 故过滤位长上限锁 96 位（模组支持的最大值），128 位 EPC 取其前 96 位匹配，
+        // 既保留过滤带来的灵敏度提升，又保证雷达一打开就能命中、不需等 2s 兜底。
         if (sdk instanceof IdataUhfAdapter) {
-            ((IdataUhfAdapter) sdk).setEpcFilter(epc, 32, epc.length() * 4, true);
+            int filterLen = Math.min(epc.length() * 4, 96);
+            ((IdataUhfAdapter) sdk).setEpcFilter(epc, 32, filterLen, true);
         }
 
         float density = getResources().getDisplayMetrics().density;
