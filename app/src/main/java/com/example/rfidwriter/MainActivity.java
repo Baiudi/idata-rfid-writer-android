@@ -403,14 +403,21 @@ public class MainActivity extends AppCompatActivity {
                 runOnUiThread(() -> setStatus(msg + "（自动重试中…）"));
                 uiHandler.postDelayed(() -> sdk.init(module, (ok2, msg2) -> runOnUiThread(() -> {
                     setStatus(msg2);
-                    // 规避切电：连接成功仅更新状态，不碰电源、不调 setInventoryMode(0)，
-                    // 避免把共用 UHF 模组留在降级态 / 连累 iUHF（连续盘点模式由后续盘点/定位按需开启）。
+                    if (ok2) {
+                        // 一次性会话初始化：先 setInventoryMode(0) 触发原生 UHF 会话的首次初始化，
+                        // 否则随后的 setInventoryMode(1)（开启连续盘点）会触发 iUHF 原生服务 SIGSEGV。
+                        // 仅做会话初始化，绝不调 powerOn/powerOff/setPower（powerSet 会直接打崩 iUHF 服务）。
+                        sdk.setInventoryMode(0);
+                    }
                 })), 800);
                 return;
             }
             runOnUiThread(() -> {
                 setStatus(msg);
-                // 规避切电：App 只做读取者，复用系统已上电模组；连接成功不碰电源、不调 setInventoryMode(0)。
+                // 一次性会话初始化：先 setInventoryMode(0) 触发原生 UHF 会话首次初始化，
+                // 否则随后的 setInventoryMode(1)（开启连续盘点）会触发 iUHF 原生服务 SIGSEGV。
+                // 仅做会话初始化，不碰 powerOn/powerOff/setPower（powerSet 会直接打崩 iUHF 服务）。
+                sdk.setInventoryMode(0);
             });
         });
     }
@@ -1208,8 +1215,7 @@ public class MainActivity extends AppCompatActivity {
         // 之前误用 setInventoryMode(0)（=flag=false），导致 startInventoryTag 不回传标签，
         // 雷达永远停在“未捕捉到目标标签”。与正常盘点/单读保持一致，用 mode=1。
         sdk.setInventoryMode(1);
-        final float txPower = getParam("power", 30); // 定位用高功率，读得远
-        sdk.setPower((int) txPower);
+        final float txPower = getParam("power", 30); // 距离估算用的假设发射功率（不再调 setPower，避免打崩 iUHF 服务）
 
         float density = getResources().getDisplayMetrics().density;
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
