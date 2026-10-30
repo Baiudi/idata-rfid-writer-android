@@ -1207,7 +1207,6 @@ public class MainActivity extends AppCompatActivity {
 
     /** 标签定位：雷达图 + 信号值(0-254) + LED 提示，循环短盘点读取目标 RSSI */
     private void locateTag(String epc) {
-        Log.i(TAG, "LOCATE enter epc=" + epc + " locating=" + locating + " sdkConnected=" + sdk.isConnected());
         if (locating) { Toast.makeText(this, "已在定位中", Toast.LENGTH_SHORT).show(); locateFromInventory = false; return; }
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); locateFromInventory = false; return; }
         // 若本次定位由盘点发起：仅暂停盘点读取（不结束会话），定位关闭后自动回盘点继续
@@ -1288,7 +1287,6 @@ public class MainActivity extends AppCompatActivity {
         sdk.startInventory(new RfidSdk.InventoryCallback() {
             @Override public void onTag(TagInfo t) {
                 boolean match = epc.equals(t.epc);
-                Log.i(TAG, "LOCATE onTag epc=" + t.epc + " match=" + match + " rssi=" + t.rssi);
                 if (match) {
                     float r = parseRssi(t.rssi);
                     lastSeen.set(System.currentTimeMillis());      // 命中目标标签：刷新“最后见到”时间，红点保持不灭
@@ -1312,7 +1310,6 @@ public class MainActivity extends AppCompatActivity {
                 long now = System.currentTimeMillis();
                 long since = (lastSeen.get() == 0) ? Long.MAX_VALUE : (now - lastSeen.get());
                 final float fr = (since >= LOCATE_HOLD_MS) ? -120f : lastRssi[0];
-                Log.i(TAG, "LOCATE tick since=" + since + " fr=" + fr + " locating=" + locating + " lastRssi=" + lastRssi[0]);
                 if (fr <= -120f) {
                     radar.setRssiDbm(fr, Float.NaN);
                     tvRssi.setText("信号值：未捕捉到目标标签（请移动设备靠近）");
