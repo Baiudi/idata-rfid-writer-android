@@ -360,6 +360,17 @@ public class IdataUhfAdapter implements RfidSdk {
     }
 
     @Override
+    public void powerOn() {
+        try {
+            ensureSdk();
+            callIface("powerOn");
+            Log.i(TAG, "powerOn: 已调用（一次性初始化原生 RF 会话，供 startInventoryTag 安全使用）");
+        } catch (Throwable e) {
+            Log.w(TAG, "powerOn 失败（忽略，继续）", e);
+        }
+    }
+
+    @Override
     public void setInventoryMode(int mode) {
         if (!mConnected.get()) return;
         try {

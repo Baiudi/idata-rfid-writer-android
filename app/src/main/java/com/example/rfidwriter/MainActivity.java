@@ -404,20 +404,22 @@ public class MainActivity extends AppCompatActivity {
                 uiHandler.postDelayed(() -> sdk.init(module, (ok2, msg2) -> runOnUiThread(() -> {
                     setStatus(msg2);
                     if (ok2) {
-                        // 一次性会话初始化：先 setInventoryMode(0) 触发原生 UHF 会话的首次初始化，
-                        // 否则随后的 setInventoryMode(1)（开启连续盘点）会触发 iUHF 原生服务 SIGSEGV。
-                        // 仅做会话初始化，绝不调 powerOn/powerOff/setPower（powerSet 会直接打崩 iUHF 服务）。
-                        sdk.setInventoryMode(0);
+                        // 一次性上电并初始化原生 RF 会话：iData 固件要求 startInventoryTag 之前必须
+                        // powerOn，否则共享的 iUHF 系统服务里会话对象为 NULL，startInventoryTag 触发
+                        // 原生 SIGSEGV（fault addr 0x0）。上电后保持连续盘点模式（绝不再 powerOff、
+                        // 绝不切到 setInventoryMode(0) 的“通电不发射”降级态），模组始终通电且发射，iUHF 仍可共存读取。
+                        sdk.powerOn();
+                        sdk.setInventoryMode(1);
                     }
                 })), 800);
                 return;
             }
             runOnUiThread(() -> {
                 setStatus(msg);
-                // 一次性会话初始化：先 setInventoryMode(0) 触发原生 UHF 会话首次初始化，
-                // 否则随后的 setInventoryMode(1)（开启连续盘点）会触发 iUHF 原生服务 SIGSEGV。
-                // 仅做会话初始化，不碰 powerOn/powerOff/setPower（powerSet 会直接打崩 iUHF 服务）。
-                sdk.setInventoryMode(0);
+                // 一次性上电并初始化原生 RF 会话：powerOn 后保持连续盘点模式，模组始终通电且发射，
+                // 既让 startInventoryTag 安全可用，也避免把 iUHF 留在“通电不发射”降级态。
+                sdk.powerOn();
+                sdk.setInventoryMode(1);
             });
         });
     }

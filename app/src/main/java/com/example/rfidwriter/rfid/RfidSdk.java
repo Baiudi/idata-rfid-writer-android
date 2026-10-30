@@ -40,6 +40,8 @@ public interface RfidSdk {
 
     void init(int moduleType, InitCallback cb);
     void release();
+    /** 一次性上电并初始化原生 RF 会话（iData 固件要求：startInventoryTag 前必须 powerOn，否则会话为 NULL 触发原生 SIGSEGV） */
+    void powerOn();
     void setPower(int dbm);
     void setInventoryMode(int mode);
     void startInventory(InventoryCallback cb);
