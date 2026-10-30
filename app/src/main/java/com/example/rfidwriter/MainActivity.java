@@ -1209,7 +1209,10 @@ public class MainActivity extends AppCompatActivity {
         if (inventorying && !locateFromInventory) endInventory();
 
         locating = true;
-        sdk.setInventoryMode(0);
+        // 关键修复：定位必须开启连续盘点模式（inventoryModeSet(mode, flag=true) 才会回传标签）。
+        // 之前误用 setInventoryMode(0)（=flag=false），导致 startInventoryTag 不回传标签，
+        // 雷达永远停在“未捕捉到目标标签”。与正常盘点/单读保持一致，用 mode=1。
+        sdk.setInventoryMode(1);
         final float txPower = getParam("power", 30); // 定位用高功率，读得远
         sdk.setPower((int) txPower);
 
