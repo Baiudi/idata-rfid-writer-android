@@ -33,7 +33,8 @@ public class RadarView extends View {
     private boolean mHasTarget = false;
     private long mPingStart = 0;     // 上次有效读数的时间戳，用于脉冲动画
 
-    private final Paint mBg = new Paint();
+    private final Paint mPanel = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mPanelBorder = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mRing = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mSweep = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mSweepTrail = new Paint(Paint.ANTI_ALIAS_FLAG);
@@ -47,7 +48,9 @@ public class RadarView extends View {
     public RadarView(Context c) {
         super(c);
 
-        mBg.setColor(0xFF08140E);                       // 深色表盘底色（雷达屏）
+        mPanelBorder.setStyle(Paint.Style.STROKE);
+        mPanelBorder.setStrokeWidth(3f);
+        mPanelBorder.setColor(0x4D7CFC5C);              // 雷达外圈描边：半透明绿
 
         mRing.setStyle(Paint.Style.STROKE);
         mRing.setStrokeWidth(2f);
@@ -96,14 +99,27 @@ public class RadarView extends View {
     }
 
     @Override
+    protected void onSizeChanged(int w, int h, int ow, int oh) {
+        super.onSizeChanged(w, h, ow, oh);
+        float cx = w / 2f, cy = h / 2f;
+        float R = Math.min(cx, cy) - 12f;
+        if (R <= 0) return;
+        // 圆形表盘径向渐变（中心亮、边缘暗），去掉方块底色
+        android.graphics.RadialGradient g = new android.graphics.RadialGradient(
+                cx, cy, R, 0xFF0C1A12, 0xFF050C08, android.graphics.Shader.TileMode.CLAMP);
+        mPanel.setShader(g);
+    }
+
+    @Override
     protected void onDraw(Canvas canvas) {
         super.onDraw(canvas);
         float cx = getWidth() / 2f, cy = getHeight() / 2f;
         float R = Math.min(cx, cy) - 12f;
         if (R <= 0) return;
 
-        // 表盘底色
-        canvas.drawColor(mBg.getColor());
+        // 圆形表盘面板（不再是方块）
+        canvas.drawCircle(cx, cy, R, mPanel);
+        canvas.drawCircle(cx, cy, R, mPanelBorder);
 
         // 5 圈同心圆 + 十字线
         for (int i = 1; i <= 5; i++) canvas.drawCircle(cx, cy, R * i / 5f, mRing);
@@ -156,8 +172,9 @@ public class RadarView extends View {
                     cy + (float) Math.sin(dotRad) * R, 8f, mSearch);
         }
 
-        // 估算距离（表盘下方）
-        canvas.drawText(mDistance, cx, cy + R + 30f, mText);
+        // 估算距离（圆形表盘内底部，替代原独立“估算距离”文字标签）
+        mText.setTextSize(22f);
+        canvas.drawText(mDistance, cx, cy + R * 0.72f, mText);
 
         postInvalidateDelayed(30); // 持续动画
     }

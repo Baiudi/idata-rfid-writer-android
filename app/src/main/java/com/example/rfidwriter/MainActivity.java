@@ -1229,31 +1229,48 @@ public class MainActivity extends AppCompatActivity {
         tvInfo.setText("EPC: " + epc);
         tvInfo.setTextSize(14);
 
-        TextView tvRssi = new TextView(this);
-        tvRssi.setText("信号值：--");
-        tvRssi.setTextSize(14);
+        // 信号能量条（替代原“信号值”数字显示，蓝框需求：以能量条呈现信号强弱）
+        android.widget.LinearLayout sigRow = new android.widget.LinearLayout(this);
+        sigRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        sigRow.setGravity(android.view.Gravity.CENTER_VERTICAL);
+        int sigPad = (int) (6 * density);
+        sigRow.setPadding(0, sigPad, 0, sigPad);
 
-        TextView tvDist = new TextView(this);
-        tvDist.setText("估算距离：--");
-        tvDist.setTextSize(16);
+        TextView tvSigLabel = new TextView(this);
+        tvSigLabel.setText("信号");
+        tvSigLabel.setTextSize(13);
+        tvSigLabel.setTextColor(0xFFB0BEC5);
+
+        EnergyBar energyBar = new EnergyBar(this);
+        int barH = (int) (20 * density);
+        energyBar.setLayoutParams(new android.widget.LinearLayout.LayoutParams(0, barH, 1f));
+        energyBar.setMinimumHeight(barH);
+
+        TextView tvDbm = new TextView(this);
+        tvDbm.setText("--");
+        tvDbm.setTextSize(13);
+        tvDbm.setTextColor(0xFFB0BEC5);
+        tvDbm.setGravity(android.view.Gravity.END);
+        tvDbm.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
+                (int) (82 * density), android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        sigRow.addView(tvSigLabel);
+        sigRow.addView(energyBar);
+        sigRow.addView(tvDbm);
 
         RadarView radar = new RadarView(this);
         radar.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Math.round(300 * density)));
 
-        android.widget.CheckBox chkLed = new android.widget.CheckBox(this);
-        chkLed.setText("LED 闪烁提示（真机定位时标签灯闪）");
-        chkLed.setOnCheckedChangeListener((b, on) -> sdk.setLedBlink(on));
-
         Button btnStop = new Button(this);
         btnStop.setText("停止定位");
+        btnStop.setBackgroundColor(0xFFD32F2F);
+        btnStop.setTextColor(0xFFFFFFFF);
         btnStop.setOnClickListener(v -> { locating = false; btnStop.setEnabled(false); btnStop.setText("已停止"); });
 
         root.addView(tvInfo);
-        root.addView(tvRssi);
-        root.addView(tvDist);
+        root.addView(sigRow);
         root.addView(radar);
-        root.addView(chkLed);
         root.addView(btnStop);
 
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
@@ -1312,15 +1329,21 @@ public class MainActivity extends AppCompatActivity {
                 final float fr = (since >= LOCATE_HOLD_MS) ? -120f : lastRssi[0];
                 if (fr <= -120f) {
                     radar.setRssiDbm(fr, Float.NaN);
-                    tvRssi.setText("信号值：未捕捉到目标标签（请移动设备靠近）");
-                    tvDist.setText("估算距离：--");
+                    energyBar.setLevel(0f);
+                    tvDbm.setText("--");
+                    tvDbm.setTextColor(0xFFB0BEC5);
                 } else {
                     float dist = FormatUtil.estimateDistanceMeters(fr, txPower);
                     radar.setRssiDbm(fr, dist);
                     int sig = Math.max(0, Math.min(254, Math.round((fr + 90f) * 254f / 60f)));
-                    tvRssi.setText("信号值：" + sig + " / 254（" + Math.round(fr) + " dBm）"
-                            + (sig >= 220 ? "  → 就在附近！" : ""));
-                    tvDist.setText("估算距离：" + FormatUtil.formatDistance(dist));
+                    energyBar.setLevel(sig / 254f);
+                    if (sig >= 220) {
+                        tvDbm.setText(Math.round(fr) + " dBm · 近");
+                        tvDbm.setTextColor(0xFF69F0AE);
+                    } else {
+                        tvDbm.setText(Math.round(fr) + " dBm");
+                        tvDbm.setTextColor(0xFFB0BEC5);
+                    }
                 }
                 uiHandler.postDelayed(this, 150);            // 150ms 节流重绘，红点停留明显变长
             }
