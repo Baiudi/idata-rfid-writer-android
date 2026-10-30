@@ -1276,42 +1276,45 @@ public class MainActivity extends AppCompatActivity {
         });
         d.show();
 
-        // 单次开启连续盘点，回调内筛选目标 EPC；UI 定时刷新（避免每 400ms 反复 start/stop 降级模组）
-        final float[] best = {-120f};
+        // 单次开启连续盘点，回调里【只】更新 lastRssi / lastSeen 时间戳（绝不触碰电源、不切电、不调 stopInventory）；
+        // 由 150ms 的 UI Handler 定时器驱动重绘：距上次读到 < 2000ms 就显示 lastRssi（红点稳定停留），
+        // 超过 2 秒静默才回退“未捕捉到目标标签”——实现信号保持 + 优雅缓降，远离时红点平滑淡出。
+        final float[] lastRssi = {-120f};
         final java.util.concurrent.atomic.AtomicLong lastSeen = new java.util.concurrent.atomic.AtomicLong(0);
         sdk.startInventory(new RfidSdk.InventoryCallback() {
             @Override public void onTag(TagInfo t) {
                 if (epc.equals(t.epc)) {
                     float r = parseRssi(t.rssi);
-                    if (r > best[0]) { best[0] = r; lastSeen.set(System.currentTimeMillis()); }
+                    lastRssi[0] = r;                          // 记录最近一次读到的 RSSI（红点随实时读数跳动）
+                    lastSeen.set(System.currentTimeMillis());
                 }
             }
             @Override public void onEnd() {}
         });
-        new Thread(() -> {
-            while (locating) {
-                final long now = System.currentTimeMillis();
-                final boolean fresh = (now - lastSeen.get()) < 700L;
-                final float rssi = fresh ? best[0] : -120f;
-                if (!fresh) best[0] = -120f;
-                runOnUiThread(() -> {
-                    if (!locating) return;
-                    if (rssi <= -120) {
-                        radar.setRssiDbm(rssi, Float.NaN);
-                        tvRssi.setText("信号值：未捕捉到目标标签（请移动设备靠近）");
-                        tvDist.setText("估算距离：--");
-                    } else {
-                        float dist = FormatUtil.estimateDistanceMeters(rssi, txPower);
-                        radar.setRssiDbm(rssi, dist);
-                        int sig = Math.max(0, Math.min(254, Math.round((rssi + 90f) * 254f / 60f)));
-                        tvRssi.setText("信号值：" + sig + " / 254（" + Math.round(rssi) + " dBm）"
-                                + (sig >= 220 ? "  → 就在附近！" : ""));
-                        tvDist.setText("估算距离：" + FormatUtil.formatDistance(dist));
-                    }
-                });
-                try { Thread.sleep(400); } catch (InterruptedException e) { break; }
+
+        final long LOCATE_HOLD_MS = 2000L;                   // 信号保持窗口：2 秒无新读数才判定丢失
+        final Runnable locateTick = new Runnable() {
+            @Override public void run() {
+                if (!locating) return;                       // 已停止定位（关闭/停止按钮）→ 停止重绘，不再续排
+                long now = System.currentTimeMillis();
+                long since = (lastSeen.get() == 0) ? Long.MAX_VALUE : (now - lastSeen.get());
+                final float fr = (since >= LOCATE_HOLD_MS) ? -120f : lastRssi[0];
+                if (fr <= -120f) {
+                    radar.setRssiDbm(fr, Float.NaN);
+                    tvRssi.setText("信号值：未捕捉到目标标签（请移动设备靠近）");
+                    tvDist.setText("估算距离：--");
+                } else {
+                    float dist = FormatUtil.estimateDistanceMeters(fr, txPower);
+                    radar.setRssiDbm(fr, dist);
+                    int sig = Math.max(0, Math.min(254, Math.round((fr + 90f) * 254f / 60f)));
+                    tvRssi.setText("信号值：" + sig + " / 254（" + Math.round(fr) + " dBm）"
+                            + (sig >= 220 ? "  → 就在附近！" : ""));
+                    tvDist.setText("估算距离：" + FormatUtil.formatDistance(dist));
+                }
+                uiHandler.postDelayed(this, 150);            // 150ms 节流重绘，红点停留明显变长
             }
-        }).start();
+        };
+        uiHandler.post(locateTick);
     }
 
     private static float parseRssi(String s) {
