@@ -1134,6 +1134,25 @@ public class MainActivity extends AppCompatActivity {
         // 覆盖按钮行为：不自动关窗
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setVisibility(View.GONE);
         d.getButton(android.app.AlertDialog.BUTTON_NEUTRAL).setVisibility(View.GONE);
+
+        // 弹窗抢焦点后，Activity.dispatchKeyEvent 收不到手柄键 → 第二次按下无法暂停。
+        // 在此接管 Dialog 的按键，复用与 Activity 完全一致的手柄键路由（学习 keyCode + start/pause/resume 切换）。
+        d.setOnKeyListener((di, keyCode, event) -> {
+            if (event.getAction() != KeyEvent.ACTION_DOWN) return false;
+            if (currentScreen == SCREEN_INVENTORY || currentScreen == SCREEN_READ) {
+                if (mHandleKey == 0 && !SYSTEM_KEYS_NO_LEARN.contains(keyCode)) {
+                    mHandleKey = keyCode;
+                    prefs.edit().putInt("handleKey", keyCode).apply();
+                    Toast.makeText(this, "已记住手柄按键（keyCode=" + keyCode + "）", Toast.LENGTH_SHORT).show();
+                }
+                if (keyCode == mHandleKey) {
+                    if (currentScreen == SCREEN_READ) readFullTag();
+                    else toggleInventoryFromHandle();
+                    return true;
+                }
+            }
+            return false;
+        });
     }
 
     /** 重建盘点列表并刷新弹窗（节流后由 uiHandler 调用） */
