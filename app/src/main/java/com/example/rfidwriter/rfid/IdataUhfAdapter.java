@@ -319,11 +319,15 @@ public class IdataUhfAdapter implements RfidSdk {
             String msg;
             try {
                 ensureSdk();
-                Object r = callIface("powerOn");
-                ok = r instanceof Boolean && (Boolean) r;
-                msg = ok ? ("UHF 已连接（绑定路径：" + mBindPath + "）")
-                        : "UHF 初始化失败（powerOn 返回 false，请确认设备 UHF 模块正常）";
-                Log.i(TAG, "init: powerOn=" + ok + " moduleType=" + mModuleType + " bindPath=" + mBindPath);
+                // 规避切电：不再调用 powerOn()/powerOff()。
+                // 该设备 UHF 模组由系统/iUHF 统一上电管理，本 App 直接复用已通电模组即可。
+                // 任何对 /proc/driver/uhf_power_enable 的 ioctl 在部分固件/SELinux 策略下，
+                // 会令共用 UHF 系统服务崩溃、或把模组留在“通电却不发射”的降级态，
+                // 连累 iUHF 也读不到（已确证）。init 仅确认 SDK 已绑定即视为已连接。
+                ok = (mIface != null || mUhf != null);
+                msg = ok ? ("UHF 已连接（绑定路径：" + mBindPath + "，复用系统已上电模组）")
+                        : "UHF 初始化失败（未能获取 UHFInterface/系统服务，请确认设备 UHF 模块正常）";
+                Log.i(TAG, "init: 跳过 powerOn（规避切电），connected=" + ok + " moduleType=" + mModuleType + " bindPath=" + mBindPath);
             } catch (Throwable e) {
                 msg = "UHF 初始化异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
                 Log.e(TAG, "init failed", e);
@@ -341,9 +345,9 @@ public class IdataUhfAdapter implements RfidSdk {
         try {
             if (mIface != null || mUhf != null) {
                 callIface("stopInventory");
-                callIface("powerOff");
             }
         } catch (Throwable ignore) { /* best effort */ }
+        // 规避切电：不再调用 powerOff()，绝不关闭共用 UHF 模组载波（否则会连累 iUHF 读不到）。
         mConnected.set(false);
     }
 

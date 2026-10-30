@@ -1022,7 +1022,7 @@ public class MainActivity extends AppCompatActivity {
         inventorying = false;
         invPaused = false;
         sdk.stopInventory();
-        sdk.setInventoryMode(0);
+        // 规避切电：不再调用 setInventoryMode(0)，保留连续盘点模式，避免把共用模组留在降级态。
         updateInventoryButton();
         refreshInventoryViews();
     }
@@ -1262,7 +1262,7 @@ public class MainActivity extends AppCompatActivity {
             locating = false;
             sdk.setLedBlink(false);
             sdk.stopInventory();
-            sdk.setInventoryMode(0);
+            // 规避切电：不再调用 setInventoryMode(0)，保留连续盘点模式。
             // 定位是由盘点发起的：关闭后自动回到盘点会话继续（保留统计、累加读取）
             if (locateFromInventory) {
                 locateFromInventory = false;
@@ -1276,22 +1276,24 @@ public class MainActivity extends AppCompatActivity {
         });
         d.show();
 
+        // 单次开启连续盘点，回调内筛选目标 EPC；UI 定时刷新（避免每 400ms 反复 start/stop 降级模组）
+        final float[] best = {-120f};
+        final java.util.concurrent.atomic.AtomicLong lastSeen = new java.util.concurrent.atomic.AtomicLong(0);
+        sdk.startInventory(new RfidSdk.InventoryCallback() {
+            @Override public void onTag(TagInfo t) {
+                if (epc.equals(t.epc)) {
+                    float r = parseRssi(t.rssi);
+                    if (r > best[0]) { best[0] = r; lastSeen.set(System.currentTimeMillis()); }
+                }
+            }
+            @Override public void onEnd() {}
+        });
         new Thread(() -> {
             while (locating) {
-                final float[] best = {-120f};
-                java.util.concurrent.CountDownLatch latch = new java.util.concurrent.CountDownLatch(1);
-                sdk.startInventory(new RfidSdk.InventoryCallback() {
-                    @Override public void onTag(TagInfo t) {
-                        if (epc.equals(t.epc)) {
-                            float r = parseRssi(t.rssi);
-                            if (r > best[0]) best[0] = r;
-                        }
-                    }
-                    @Override public void onEnd() { latch.countDown(); }
-                });
-                try { latch.await(400, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
-                sdk.stopInventory();
-                final float rssi = best[0];
+                final long now = System.currentTimeMillis();
+                final boolean fresh = (now - lastSeen.get()) < 700L;
+                final float rssi = fresh ? best[0] : -120f;
+                if (!fresh) best[0] = -120f;
                 runOnUiThread(() -> {
                     if (!locating) return;
                     if (rssi <= -120) {
@@ -1307,7 +1309,7 @@ public class MainActivity extends AppCompatActivity {
                         tvDist.setText("估算距离：" + FormatUtil.formatDistance(dist));
                     }
                 });
-                try { Thread.sleep(80); } catch (InterruptedException e) { break; }
+                try { Thread.sleep(400); } catch (InterruptedException e) { break; }
             }
         }).start();
     }
