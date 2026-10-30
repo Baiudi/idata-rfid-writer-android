@@ -420,10 +420,18 @@ public class IdataUhfAdapter implements RfidSdk {
                         if (epc == null) { parsedFail++; continue; }
                         if (!cur.containsKey(epc)) {
                             String rssi = null;
+                            boolean skipNext = false;
+                            // iUHF 缓存格式 [空, EPC, RSSI, 空, EPC, RSSI...]：RSSI 通常紧跟 EPC 之后
                             if (i + 1 < arr.length && arr[i + 1] != null) {
                                 String nxt = arr[i + 1].trim();
-                                if (nxt.matches("-?\\d+(\\.\\d+)?")) { rssi = nxt; i++; }
+                                if (nxt.matches("-?\\d+(\\.\\d+)?")) { rssi = nxt; skipNext = true; }
                             }
+                            // 偶发某帧 EPC 后无 RSSI，则向前一个元素补查，提升 RSSI 命中率
+                            if (rssi == null && i - 1 >= 0 && arr[i - 1] != null) {
+                                String prev = arr[i - 1].trim();
+                                if (prev.matches("-?\\d+(\\.\\d+)?")) { rssi = prev; }
+                            }
+                            if (skipNext) i++;
                             cur.put(epc, rssi);
                         }
                     }

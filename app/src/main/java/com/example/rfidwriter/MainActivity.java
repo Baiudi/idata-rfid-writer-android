@@ -1291,8 +1291,15 @@ public class MainActivity extends AppCompatActivity {
                 Log.i(TAG, "LOCATE onTag epc=" + t.epc + " match=" + match + " rssi=" + t.rssi);
                 if (match) {
                     float r = parseRssi(t.rssi);
-                    lastRssi[0] = r;                          // 记录最近一次读到的 RSSI（红点随实时读数跳动）
-                    lastSeen.set(System.currentTimeMillis());
+                    lastSeen.set(System.currentTimeMillis());      // 命中目标标签：刷新“最后见到”时间，红点保持不灭
+                    if (r > -120f) {
+                        lastRssi[0] = r;                          // 有效 RSSI：更新读数（驱动距离估算 + 红点实时跳动）
+                    } else if (lastRssi[0] <= -120f) {
+                        // 本帧 RSSI 缺失（iUHF 缓存偶发“EPC 不带 RSSI”），但标签确已命中：
+                        // 给一个保守近场默认值，立即显示红点，不再回退“未捕捉到目标标签”
+                        lastRssi[0] = -55f;
+                    }
+                    // 已有有效读数时本帧缺失不覆盖，红点保持稳定
                 }
             }
             @Override public void onEnd() {}
