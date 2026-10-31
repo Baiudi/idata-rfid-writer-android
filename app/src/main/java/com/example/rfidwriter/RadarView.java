@@ -119,10 +119,17 @@ public class RadarView extends View {
         mBearingDeg = deg;
         double a = Math.toRadians(deg + 90f);   // 0 = 正前
         double x = Math.sin(a), y = Math.cos(a); // x:右+, y:前+
-        StringBuilder sb = new StringBuilder();
-        if (y >= 0) sb.append("前"); else sb.append("后");
-        if (x > 0.35) sb.append("右"); else if (x < -0.35) sb.append("左");
-        mBearingHint = sb.toString();
+        // 8 方位：先判主方向(|分量|>0.92 约 ±22.5°)，其余按象限细分为前右/后右/后左/前左
+        String hint;
+        if (y > 0.92) hint = "前";
+        else if (y < -0.92) hint = "后";
+        else if (x > 0.92) hint = "右";
+        else if (x < -0.92) hint = "左";
+        else if (x >= 0 && y >= 0) hint = "前右";
+        else if (x >= 0 && y < 0) hint = "后右";
+        else if (x < 0 && y < 0) hint = "后左";
+        else hint = "前左";
+        mBearingHint = hint;
         invalidate();
     }
 
@@ -215,9 +222,15 @@ public class RadarView extends View {
         // 估算距离（圆形表盘内底部）
         mText.setTextSize(22f);
         canvas.drawText(mDistance, cx, cy + R * 0.72f, mText);
-        // 方位提示（距离下方）
+        // 方位提示（距离下方）：弱信号时方位不可靠，红色警示并提示“靠近以定向”
         mText.setTextSize(20f);
-        canvas.drawText("方位 " + mBearingHint, cx, cy + R * 0.72f + 26f, mText);
+        if (mHasTarget && mStrength < 0.3f) {
+            mText.setColor(0xFFFFAB40);   // 橙黄：弱信号、方位可疑
+            canvas.drawText("方位 " + mBearingHint + " · 靠近以定向", cx, cy + R * 0.72f + 26f, mText);
+        } else {
+            mText.setColor(0xFFB9F6CA);   // 浅绿：信号充足、方位可信
+            canvas.drawText("方位 " + mBearingHint, cx, cy + R * 0.72f + 26f, mText);
+        }
 
         postInvalidateDelayed(30); // 持续动画
     }
