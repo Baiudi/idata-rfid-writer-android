@@ -107,6 +107,7 @@ public class IdataUhfAdapter implements RfidSdk {
     // 用“时间窗”去重（默认 2s 清空一次），避免同一条标签被高频重复转发导致 UI 卡顿，
     // 同时保证：只要在盘点会话内被读到至少一次，就一定会进入 invStats（唯一数不丢）。
     private final Set<String> mWindowSeen = new HashSet<>();
+    private final Set<String> mWindowHasRssi = new HashSet<>();
     private long mWindowClearAt = 0;
     private static final long WINDOW_MS = 2000;
     // 诊断计数：区分“回调实时送达”与“轮询兜底送达”，便于确认 150 张漏读是否已根治
@@ -263,15 +264,29 @@ public class IdataUhfAdapter implements RfidSdk {
      */
     private void dispatchTag(String epc, String rssi) {
         if (epc == null || epc.isEmpty() || mInvCb == null) return;
+        boolean hasRssi = (rssi != null && !rssi.isEmpty());
         long now = System.currentTimeMillis();
+        boolean forward;
         synchronized (mWindowSeen) {
             if (now >= mWindowClearAt) {
                 mWindowSeen.clear();
+                mWindowHasRssi.clear();
                 mWindowClearAt = now + WINDOW_MS;
             }
-            if (mWindowSeen.contains(epc)) return;
-            mWindowSeen.add(epc);
+            if (!mWindowSeen.contains(epc)) {
+                // 首次出现：必然转发（保证唯一数不丢）
+                forward = true;
+                mWindowSeen.add(epc);
+                if (hasRssi) mWindowHasRssi.add(epc);
+            } else if (hasRssi && !mWindowHasRssi.contains(epc)) {
+                // 同窗口内已用“仅 EPC”的实时回调转发过，现用带 RSSI 的数据补全信号值（避免 RSSI 被去重吞掉）
+                forward = true;
+                mWindowHasRssi.add(epc);
+            } else {
+                forward = false; // 信息不比已有更优，跳过
+            }
         }
+        if (!forward) return;
         TagInfo ft = new TagInfo();
         ft.epc = epc;
         ft.rssi = (rssi == null ? "" : rssi);
