@@ -4,6 +4,7 @@ import android.content.Context;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
+import android.os.RemoteException;
 import android.util.Log;
 
 import java.io.File;
@@ -93,6 +94,14 @@ public class IdataUhfAdapter implements RfidSdk {
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private String mBindPath = "none";             // 诊断：实际用了哪条绑定路径
     private int mModuleType = 0;
+
+    // 连接健壮性：iData 系统 UHF 服务（iUHF）约每 3 分钟自重启，会导致已持有的 binder 代理失效。
+    // 代理死后 readTagFromBuffer / startInventoryTag 会抛 DeadObjectException(RemoteException) 或静默返回空，
+    // 但 mConnected 仍为真——表现为“UI 显示已连接、盘点却一直 0 张”。下面这套机制负责检测并自动重建。
+    private ConnectionListener mConnListener;       // 业务层回调（MainActivity）
+    private final AtomicBoolean mResumableInventory = new AtomicBoolean(false); // 断连前是否处于盘点中（用于重连后续接）
+    private final AtomicBoolean mReconnecting = new AtomicBoolean(false);       // 防重入：同一时刻只允许一个重连流程
+    private final AtomicBoolean mHeartbeatRunning = new AtomicBoolean(false);   // 心跳保活线程运行标志
 
     // 轮询去重：避免每轮把同一批累积缓存反复转发
     private final Set<String> mPollSeen = new HashSet<>();
@@ -274,7 +283,19 @@ public class IdataUhfAdapter implements RfidSdk {
         if (clazz == null || target == null) throw new IllegalStateException("SDK 未初始化");
         for (Method m : clazz.getMethods()) {
             if (m.getName().equals(name) && m.getParameterTypes().length == args.length) {
-                return m.invoke(target, args);
+                try {
+                    return m.invoke(target, args);
+                } catch (java.lang.reflect.InvocationTargetException ite) {
+                    Throwable cause = ite.getCause();
+                    // 系统 UHF 服务重启会导致代理抛出 DeadObjectException（继承自 RemoteException）。
+                    // 捕获后即判定 binder 死亡，转入自动重连。
+                    if (cause instanceof RemoteException
+                            || (cause != null && cause.getCause() instanceof RemoteException)) {
+                        onBinderDied("callIface:" + name + " -> "
+                                + (cause != null ? cause.getClass().getSimpleName() : "RemoteException"));
+                    }
+                    throw ite;
+                }
             }
         }
         throw new NoSuchMethodException(name + " arity=" + args.length);
@@ -301,6 +322,16 @@ public class IdataUhfAdapter implements RfidSdk {
                 Log.i(TAG, sb.toString());
             }
             return arr;
+        } catch (java.lang.reflect.InvocationTargetException ite) {
+            Throwable c = ite.getCause();
+            if (c instanceof RemoteException
+                    || (c != null && c.getCause() instanceof RemoteException)) {
+                onBinderDied("pollBuffer -> "
+                        + (c != null ? c.getClass().getSimpleName() : "RemoteException"));
+            } else {
+                Log.w(TAG, "pollBuffer 异常（忽略，继续下一轮）", ite);
+            }
+            return new String[0];
         } catch (Throwable e) {
             Log.w(TAG, "pollBuffer 异常（忽略，继续下一轮）", e);
             return new String[0];
@@ -314,6 +345,9 @@ public class IdataUhfAdapter implements RfidSdk {
     @Override
     public void init(int moduleType, InitCallback cb) {
         this.mModuleType = moduleType;
+        // 重连/重复连接时先清空失效代理，确保 ensureSdk 重建全新的 binder 绑定
+        // （否则 mIface 非空会让 ensureSdk 早返回，复用已死的代理而“假连接”）。
+        reset();
         new Thread(() -> {
             boolean ok = false;
             String msg;
@@ -333,15 +367,29 @@ public class IdataUhfAdapter implements RfidSdk {
                 Log.e(TAG, "init failed", e);
             }
             mConnected.set(ok);
+            if (ok) startHeartbeat();   // 启动保活心跳：周期性重申连续盘点模式，兼作 binder 存活探测
             final boolean fok = ok;
             final String fmsg = msg;
             if (cb != null) mMain.post(() -> cb.onResult(fok, fmsg));
         }).start();
     }
 
+    /** 清空全部运行态（失效代理 / 轮询 / 连接标志 / 可续接标记），供 init 与重连重建使用 */
+    private void reset() {
+        mIface = null; mIfaceClass = null; mRawManager = null;
+        mUhf = null; mUhfClass = null;
+        mListener = null;                 // 重建后 ensureListener 会重新注册
+        mPolling.set(false);
+        mResumableInventory.set(false);
+        mConnected.set(false);
+        stopHeartbeat();
+    }
+
     @Override
     public void release() {
         mPolling.set(false);
+        mResumableInventory.set(false);
+        stopHeartbeat();
         try {
             if (mIface != null || mUhf != null) {
                 callIface("stopInventory");
@@ -383,8 +431,15 @@ public class IdataUhfAdapter implements RfidSdk {
 
     @Override
     public void startInventory(InventoryCallback cb) {
-        if (!mConnected.get() || cb == null) return;
+        if (cb == null) return;
         mInvCb = cb;
+        mResumableInventory.set(true);   // 记住“盘点中”，binder 断连后自动重连时据此续接
+        startInventoryInternal();
+    }
+
+    /** 真正发起群读（业务调用与自动重连续接共用）；代理失效时会在内部触发 onBinderDied */
+    private void startInventoryInternal() {
+        if (!mConnected.get() || mInvCb == null) return;
         try {
             // 回调作为双保险注册（即便代理未正确绑定，下面轮询仍会给出标签）
             ensureListener();
@@ -467,6 +522,7 @@ public class IdataUhfAdapter implements RfidSdk {
         Log.i(TAG, "stopInventory 调用（mPolling " + mPolling.get() + " -> false）",
                 new Throwable("stop来源"));
         mPolling.set(false);
+        mResumableInventory.set(false);   // 主动停止盘点，断连时不再自动续接
         if (mIface == null && mUhf == null) return;
         try {
             callIface("stopInventory");
@@ -606,6 +662,107 @@ public class IdataUhfAdapter implements RfidSdk {
     @Override
     public boolean isConnected() {
         return mConnected.get();
+    }
+
+    @Override
+    public void setConnectionListener(ConnectionListener l) {
+        mConnListener = l;
+    }
+
+    // ------------------------------------------------------------------
+    // 连接健壮性：binder 死亡检测 + 自动重连 + 保活心跳
+    // ------------------------------------------------------------------
+
+    /**
+     * 底层 UHF 系统服务（iUHF）约每 3 分钟自重启，会导致我们持有的 binder 代理失效：
+     * 此后调用会抛 DeadObjectException（继承自 RemoteException）或静默返回空，但 mConnected 仍为真，
+     * 表现为“UI 显示已连接、盘点却一直 0 张”。本方法由 callIface / pollBuffer / 心跳在捕获到
+     * RemoteException 时调用，统一转入“标记失效 → 清空失效代理 → 自动重连 → 续接盘点”流程。
+     */
+    private void onBinderDied(String reason) {
+        Log.w(TAG, "onBinderDied: " + reason);
+        // 仅第一个触发者执行整段流程，避免轮询/心跳/回调并发重复重连
+        if (!mConnected.compareAndSet(true, false)) return;
+        // 清空失效代理，确保下次 ensureSdk 重建全新 binder
+        mIface = null; mIfaceClass = null; mRawManager = null;
+        mUhf = null; mUhfClass = null; mListener = null;
+        mPolling.set(false);
+        stopHeartbeat();
+        if (mConnListener != null) {
+            mMain.post(() -> mConnListener.onDisconnected(reason));
+        }
+        scheduleReconnect();
+    }
+
+    /** 安排一次自动重连（带防重入）；失败会指数退避重试 */
+    private void scheduleReconnect() {
+        if (mReconnecting.compareAndSet(false, true)) {
+            Log.i(TAG, "scheduleReconnect: 1s 后开始重连");
+            mMain.postDelayed(this::doReconnect, 1000);
+        }
+    }
+
+    /** 真正执行重连：重建 binder、上电、重申连续盘点，若此前在盘点则自动续接 */
+    private void doReconnect() {
+        boolean wantResume = mResumableInventory.get();   // 先记下“盘点中”状态，下面的 reset() 会清掉它
+        Log.i(TAG, "doReconnect: 重建 UHF 绑定，wantResume=" + wantResume);
+        try {
+            reset();
+            ensureSdk();
+            boolean ok = (mIface != null || mUhf != null);
+            if (!ok) {
+                Log.w(TAG, "doReconnect: ensureSdk 失败，2s 后重试");
+                mReconnecting.set(false);
+                mMain.postDelayed(this::scheduleReconnect, 2000);
+                return;
+            }
+            mConnected.set(true);
+            powerOn();                 // 重新初始化原生 RF 会话，使 startInventoryTag 安全可用
+            setInventoryMode(1);       // 重申连续盘点模式
+            startHeartbeat();          // 重启保活心跳
+            boolean resumed = false;
+            if (wantResume) {
+                Log.i(TAG, "doReconnect: 续接上次盘点");
+                startInventoryInternal();
+                resumed = true;
+            }
+            mReconnecting.set(false);
+            if (mConnListener != null) {
+                final boolean fResumed = resumed;
+                mMain.post(() -> mConnListener.onReconnected(fResumed));
+            }
+        } catch (Throwable e) {
+            Log.e(TAG, "doReconnect 异常，2s 后重试", e);
+            mReconnecting.set(false);
+            mMain.postDelayed(this::scheduleReconnect, 2000);
+        }
+    }
+
+    /**
+     * 保活心跳：连接成功后启动，每 5 秒重申一次连续盘点模式（inventoryModeSet(1,true)）。
+     * 这既能防止系统服务把模组留在“通电不发射”降级态，又能在 binder 失效时令该方法抛出
+     * RemoteException，进而触发 onBinderDied → 自动重连（即使当前并未在盘点，也能即时发现死链）。
+     */
+    private void startHeartbeat() {
+        if (mHeartbeatRunning.get()) return;
+        mHeartbeatRunning.set(true);
+        new Thread(() -> {
+            while (mHeartbeatRunning.get() && mConnected.get()) {
+                try { Thread.sleep(5000); } catch (InterruptedException e) { break; }
+                if (!mConnected.get()) break;
+                try {
+                    callIface("inventoryModeSet", 1, true);
+                } catch (Throwable ignore) {
+                    // binder 死亡已由 callIface 内部 onBinderDied 处理；循环将因 mConnected=false 退出
+                }
+            }
+            mHeartbeatRunning.set(false);
+        }, "uhf-heartbeat").start();
+    }
+
+    /** 停止保活心跳 */
+    private void stopHeartbeat() {
+        mHeartbeatRunning.set(false);
     }
 
     // ------------------------------------------------------------------

@@ -136,6 +136,31 @@ public class MainActivity extends AppCompatActivity {
         // （iData UHF SDK 无法直接拿到 aar，改为把真机预装 UHF Demo 的 classes.dex 作为资源打入 APK。）
         ((IdataUhfAdapter) sdk).attach(this);
 
+        // UHF 底层 binder 可能随系统 UHF 服务（约每 3 分钟）自重启而失效；适配器会自动重连，
+        // 这里仅同步 UI 状态并在盘点中断连时自动续接界面。
+        sdk.setConnectionListener(new RfidSdk.ConnectionListener() {
+            @Override
+            public void onDisconnected(String reason) {
+                runOnUiThread(() -> {
+                    setStatus("UHF 连接断开（" + reason + "），正在自动重连…");
+                    Toast.makeText(MainActivity.this, "UHF 连接断开，正在自动重连", Toast.LENGTH_SHORT).show();
+                });
+            }
+
+            @Override
+            public void onReconnected(boolean resumedInventory) {
+                runOnUiThread(() -> {
+                    setStatus("UHF 已连接（自动重连成功）");
+                    Toast.makeText(MainActivity.this, "UHF 已自动重连", Toast.LENGTH_SHORT).show();
+                    // 若盘点被自动续接，确保界面状态与硬件一致（取消暂停标记并刷新标题）
+                    if (resumedInventory && inventorying) {
+                        invPaused = false;
+                        refreshInventoryViews();
+                    }
+                });
+            }
+        });
+
         // 注册测试钩子：shell 广播即可触发（无需脆弱的 UI 坐标点击）
         // Android 13+ 需用 RECEIVER_EXPORTED，否则 shell 发送的广播收不到（enqueued receivers=0）
         mTestReceiver = new BroadcastReceiver() {
@@ -412,6 +437,7 @@ public class MainActivity extends AppCompatActivity {
                         // 绝不切到 setInventoryMode(0) 的“通电不发射”降级态），模组始终通电且发射，iUHF 仍可共存读取。
                         sdk.powerOn();
                         sdk.setInventoryMode(1);
+                        resumeInventoryIfNeeded();
                     }
                 })), 800);
                 return;
@@ -422,8 +448,17 @@ public class MainActivity extends AppCompatActivity {
                 // 既让 startInventoryTag 安全可用，也避免把 iUHF 留在“通电不发射”降级态。
                 sdk.powerOn();
                 sdk.setInventoryMode(1);
+                resumeInventoryIfNeeded();
             });
         });
+    }
+
+    /** 手动重连成功后，若此前正在盘点则重启群读轮询（init/reset 已清空运行态，需重新发起） */
+    private void resumeInventoryIfNeeded() {
+        if (inventorying && !invPaused) {
+            Log.i(TAG, "resumeInventoryIfNeeded: 重连后重启盘点轮询");
+            sdk.startInventory(makeInventoryCallback());
+        }
     }
 
     // ----------------- 远程读写测试钩子（自动化验证用） -----------------

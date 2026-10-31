@@ -38,6 +38,17 @@ public interface RfidSdk {
         void onResult(boolean ok, String dataHex, String msg);
     }
 
+    /**
+     * UHF 底层 binder 连接状态监听（iData 系统 UHF 服务约每 3 分钟自重启，会导致代理失效）。
+     * 适配器在检测到 binder 死亡后自动重连，并通过本监听通知业务层刷新状态 / 续接盘点。
+     */
+    interface ConnectionListener {
+        /** binder 失效，适配器已转入自动重连流程 */
+        void onDisconnected(String reason);
+        /** 自动重连成功；resumedInventory=true 表示盘点已自动续接 */
+        void onReconnected(boolean resumedInventory);
+    }
+
     void init(int moduleType, InitCallback cb);
     void release();
     /** 一次性上电并初始化原生 RF 会话（iData 固件要求：startInventoryTag 前必须 powerOn，否则会话为 NULL 触发原生 SIGSEGV） */
@@ -79,6 +90,9 @@ public interface RfidSdk {
                            String pwd, WriteCallback cb);
 
     boolean isConnected();
+
+    /** 注册底层连接状态监听（binder 死亡 / 自动重连），传 null 取消 */
+    void setConnectionListener(ConnectionListener l);
 
     /**
      * 同步读：阻塞等待回调，最多 timeoutMs。
