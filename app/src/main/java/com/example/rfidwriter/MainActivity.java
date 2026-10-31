@@ -104,14 +104,16 @@ public class MainActivity extends AppCompatActivity {
     private boolean locateFromInventory = false;   // 本次定位是否由盘点弹窗发起（关闭后自动回盘点）
 
     // ----------------- 手柄按键（设备扳机/扫描键）映射 -----------------
-    // 在「读取标签/盘点」页第一次按下任意【非系统】键时，自动记住该 keyCode 作为“手柄触发键”（持久化），
+    // 在「读取标签/盘点」页第一次按下任意【非系统】键时，自动记住该 keyCode 作为“手柄触发键”，
     // 之后按该键即触发对应操作。这样不依赖具体机型把扳机映射成哪个 keyCode（F1/手柄键/相机键…都行）。
     // 系统键（返回/Home/电源/音量等）不参与学习，避免误绑。
+    // 注意：学习结果【不持久化】，每次启动首次按下重新学习。原因：持久化后若误记/被测试写入错误 keyCode，
+    //       会导致真实手柄键永远匹配不上（既无法开始也无法暂停）。改成每次启动学习可彻底规避该“卡死”问题。
     private static final Set<Integer> SYSTEM_KEYS_NO_LEARN = new HashSet<>(Arrays.asList(
             KeyEvent.KEYCODE_BACK, KeyEvent.KEYCODE_HOME, KeyEvent.KEYCODE_APP_SWITCH,
             KeyEvent.KEYCODE_POWER, KeyEvent.KEYCODE_VOLUME_UP, KeyEvent.KEYCODE_VOLUME_DOWN,
             KeyEvent.KEYCODE_VOLUME_MUTE, KeyEvent.KEYCODE_ENDCALL, KeyEvent.KEYCODE_CALL));
-    private int mHandleKey = 0;   // 0 表示尚未学习到；从偏好读取
+    private int mHandleKey = 0;   // 0 表示尚未学习到；每次启动首次按下非系统键时学习，不持久化
 
     // 盘点统计：epc -> [次数, 最大RSSI(dBm)]
     private final Map<String, int[]> invStats = new ConcurrentHashMap<>();
@@ -158,7 +160,7 @@ public class MainActivity extends AppCompatActivity {
 
         // 外壳视图（顶部栏 + 持久状态 + 内容容器）一次性绑定
         prefs = getSharedPreferences(PARAMS, MODE_PRIVATE);
-        mHandleKey = prefs.getInt("handleKey", 0);   // 恢复已学习的手柄触发键
+        mHandleKey = 0;   // 每次启动重新学习手柄键（不读取旧偏好，避免误记的 keyCode 卡死真实按键）
         tvStatus = findViewById(R.id.tvStatus);
         tvProgress = findViewById(R.id.tvProgress);
         tvBadge = findViewById(R.id.tvBadge);
@@ -531,12 +533,11 @@ public class MainActivity extends AppCompatActivity {
             int code = e.getKeyCode();
             if (currentScreen == SCREEN_READ || currentScreen == SCREEN_INVENTORY) {
                 Log.i(TAG, "KEY keyCode=" + code + " screen=" + currentScreen);
-                // 尚未学习到手柄键：按下任意非系统键即记住它（兼容各机型扳机映射）
+                // 尚未学习到手柄键：按下任意非系统键即绑定它（每次启动首次按下学习，不持久化）
                 if (mHandleKey == 0 && !SYSTEM_KEYS_NO_LEARN.contains(code)) {
                     mHandleKey = code;
-                    prefs.edit().putInt("handleKey", code).apply();
                     Log.i(TAG, "HANDLE_KEY learned=" + code);
-                    Toast.makeText(this, "已记住手柄按键（keyCode=" + code + "）", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "已绑定手柄按键（keyCode=" + code + "）", Toast.LENGTH_SHORT).show();
                 }
                 if (code == mHandleKey) {
                     if (currentScreen == SCREEN_READ) {
@@ -1142,8 +1143,7 @@ public class MainActivity extends AppCompatActivity {
             if (currentScreen == SCREEN_INVENTORY || currentScreen == SCREEN_READ) {
                 if (mHandleKey == 0 && !SYSTEM_KEYS_NO_LEARN.contains(keyCode)) {
                     mHandleKey = keyCode;
-                    prefs.edit().putInt("handleKey", keyCode).apply();
-                    Toast.makeText(this, "已记住手柄按键（keyCode=" + keyCode + "）", Toast.LENGTH_SHORT).show();
+                    Toast.makeText(this, "已绑定手柄按键（keyCode=" + keyCode + "）", Toast.LENGTH_SHORT).show();
                 }
                 if (keyCode == mHandleKey) {
                     if (currentScreen == SCREEN_READ) readFullTag();
