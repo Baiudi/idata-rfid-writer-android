@@ -4,6 +4,7 @@ import android.app.Activity;
 import android.content.Intent;
 import android.content.BroadcastReceiver;
 import android.content.IntentFilter;
+import android.content.SharedPreferences;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
@@ -123,6 +124,7 @@ public class MainActivity extends AppCompatActivity {
     private ToneGenerator mToneGen;                  // 邻近提示音发生器
     private volatile float mBearingCalAz = Float.NaN;   // 正前基准（罗盘角，0=北）。NaN=未校准，回退到实时设备朝向
     private long mLastAutoCalMs = 0;                    // 自动校准节流时间戳
+    private long mLastDiagMs = 0;                      // 基准正确性诊断日志节流时间戳
 
     // 4 方位标定标签：用于校准/确认罗盘正前基准。EPC 大写；angle=标签相对【设备正前】的方位角(度)
     // A1=前(0)  B1=后(180)  C1=右(90)  D1=左(-90)，与实物摆放一致（用户提供）。
@@ -1379,24 +1381,54 @@ public class MainActivity extends AppCompatActivity {
         radar.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Math.round(300 * density)));
 
+        // 停止定位（红钮）：停止本次定位循环，弹窗保持以便查看最终状态
         Button btnStop = new Button(this);
         btnStop.setText("停止定位");
+        btnStop.setTextSize(14);
         btnStop.setBackgroundColor(0xFFD32F2F);
         btnStop.setTextColor(0xFFFFFFFF);
         btnStop.setOnClickListener(v -> { locating = false; btnStop.setEnabled(false); btnStop.setText("已停止"); });
 
-        root.addView(tvInfo);
-        root.addView(tvLocStatus);
-        root.addView(tvCalHint);
-        root.addView(sigRow);
-        root.addView(radar);
-        root.addView(btnCalibrate);
-        root.addView(btnStop);
+        // “以此方向为正前校准”改为小按钮（不再通栏大蓝钮），与停止定位并排
+        btnCalibrate.setTextSize(12);
+        btnCalibrate.setPadding((int)(10 * density), (int)(8 * density), (int)(10 * density), (int)(8 * density));
+
+        // 关闭（文字钮）
+        TextView btnClose = new TextView(this);
+        btnClose.setText("关闭");
+        btnClose.setTextSize(14);
+        btnClose.setTextColor(0xFF1976D2);
+        btnClose.setGravity(android.view.Gravity.CENTER);
+        btnClose.setPadding((int)(18 * density), (int)(8 * density), (int)(18 * density), (int)(8 * density));
+
+        // 底部按钮行：校准(小) + 停止定位(红) + 关闭，固定可见、必可按到
+        android.widget.LinearLayout btnRow = new android.widget.LinearLayout(this);
+        btnRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        btnRow.setPadding(0, (int)(8 * density), 0, 0);
+        btnRow.addView(btnCalibrate, new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        btnRow.addView(btnStop, new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        btnRow.addView(btnClose, new android.widget.LinearLayout.LayoutParams(android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // 可滚动内容区（信息+雷达），与底部按钮行分离，保证按钮始终可见可按
+        android.widget.LinearLayout contentInner = new android.widget.LinearLayout(this);
+        contentInner.setOrientation(android.widget.LinearLayout.VERTICAL);
+        contentInner.addView(tvInfo);
+        contentInner.addView(tvLocStatus);
+        contentInner.addView(tvCalHint);
+        contentInner.addView(sigRow);
+        contentInner.addView(radar);
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(contentInner);
+        scroll.setLayoutParams(new android.widget.LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        root.addView(scroll);
+        root.addView(btnRow);
+        root.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
                 .setTitle("标签定位")
                 .setView(root)
-                .setNegativeButton("关闭", null)
                 .create();
         d.setOnDismissListener(di -> {
             locating = false;
@@ -1421,6 +1453,14 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         d.show();
+        btnClose.setOnClickListener(v -> d.dismiss());
+        // 弹窗占较大比例屏幕，确保雷达与底部按钮都完整可见（避免“停止定位”被挤出/按不到）
+        try {
+            android.view.Display disp = getWindowManager().getDefaultDisplay();
+            android.graphics.Point psz = new android.graphics.Point();
+            disp.getSize(psz);
+            d.getWindow().setLayout((int)(psz.x * 0.94), (int)(psz.y * 0.88));
+        } catch (Exception ignore) {}
 
         // 单次开启连续盘点，回调里【只】更新 lastRssi / lastSeen 时间戳（绝不触碰电源、不切电、不调 stopInventory）；
         // 由 UI Handler 驱动重绘：距上次读到 < 2000ms 就显示 lastRssi（红点稳定停留），
@@ -1464,6 +1504,17 @@ public class MainActivity extends AppCompatActivity {
                         float base = Float.isNaN(mBearingCalAz) ? mDeviceAzimuthDeg : mBearingCalAz;
                         float rel = -90f + normalizeDeg(mTagBearingDeg - base);
                         radar.setBearing(rel);
+
+                        // —— 基准正确性诊断（节流 400ms）：打印换算全链路数值，验证设备转动时红点是否指向真实相对方向 ——
+                        long dnow = System.currentTimeMillis();
+                        if (dnow - mLastDiagMs > 400) {
+                            mLastDiagMs = dnow;
+                            float raw = normalizeDeg(mTagBearingDeg - base);   // 指南针式相对角：0=前,90=右,180=后,-90=左
+                            Log.d("BASELINE", String.format(java.util.Locale.US,
+                                "tag=%s calAz=%.1f tagB=%.1f devAz=%.1f base=%.1f rawRel=%.1f radarRel=%.1f computedDir=%s",
+                                (calName != null ? calName : epc), mBearingCalAz, mTagBearingDeg,
+                                mDeviceAzimuthDeg, base, raw, rel, dirOf(raw)));
+                        }
                     }
                     if (matchedOnce[0]) {
                         tvLocStatus.setText("已锁定 ✓  RSSI " + Math.round(fr) + " dBm · 距 " + FormatUtil.formatDistance(dist));
@@ -1515,14 +1566,20 @@ public class MainActivity extends AppCompatActivity {
                     lastSeen.set(System.currentTimeMillis());      // 命中目标标签：刷新“最后见到”时间，红点保持不灭
                     if (r > -120f) {
                         lastRssi[0] = r;                          // 有效 RSSI：更新读数（驱动距离估算 + 红点实时跳动）
-                        // 自动校准：目标为标定标签且信号很强(基本正对)时，依其已知方位反推正前基准并持久化
+                        // 自动校准：目标为标定标签且处于近场(>-80dBm，与方位锚定同门限)时，依其已知方位反推正前基准并持久化。
+                        // 注：20CM 等近距离下 RSSI 因天线主瓣方向性差异可达 -50~-70，若阈值过严(如-55)会导致多数标定标签永不触发自动校准，
+                        // 从而 base 回退到实时朝向、所有标签都被算成“正前”，丧失 4 方位区分能力。故与锚定门限保持一致用 -80。
                         String aCalKey = (t.epc == null) ? "" : t.epc.trim().toUpperCase();
-                        if (CAL_TAG_ANGLE.containsKey(aCalKey) && r > -55f) {
+                        if (CAL_TAG_ANGLE.containsKey(aCalKey) && r > -80f) {
                             long acNow = System.currentTimeMillis();
                             if (acNow - mLastAutoCalMs > 1000) {   // 节流：1 秒内最多校准一次
                                 mLastAutoCalMs = acNow;
                                 mBearingCalAz = normalizeDeg(mDeviceAzimuthDeg - CAL_TAG_ANGLE.get(aCalKey));
                                 saveBearingCal(mBearingCalAz);
+                                // [diag] 自动校准基准数值（验证用，可保留）
+                                Log.d("BASELINE", String.format(java.util.Locale.US,
+                                    "AUTOCAL tag=%s defAngle=%.0f devAz=%.1f -> calAz=%.1f",
+                                    CAL_TAG_NAME.get(aCalKey), CAL_TAG_ANGLE.get(aCalKey), mDeviceAzimuthDeg, mBearingCalAz));
                                 uiHandler.post(() -> {
                                     if (tvCalHint != null)
                                         tvCalHint.setText("已自动校准正前基准 ✓（依据 " + CAL_TAG_NAME.get(aCalKey) + " 方位）");
