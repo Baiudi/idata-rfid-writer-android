@@ -124,6 +124,7 @@ public class MainActivity extends AppCompatActivity {
     private ToneGenerator mToneGen;                  // 邻近提示音发生器
     private volatile float mBearingCalAz = Float.NaN;   // 正前基准（罗盘角，0=北）。NaN=未校准，回退到实时设备朝向
     private long mLastAutoCalMs = 0;                    // 自动校准节流时间戳
+    private long mLastDiagMs = 0;                      // 基准正确性诊断日志节流时间戳
 
     // 4 方位标定标签：用于校准/确认罗盘正前基准。EPC 大写；angle=标签相对【设备正前】的方位角(度)
     // A1=前(0)  B1=后(180)  C1=右(90)  D1=左(-90)，与实物摆放一致（用户提供）。
@@ -1503,6 +1504,17 @@ public class MainActivity extends AppCompatActivity {
                         float base = Float.isNaN(mBearingCalAz) ? mDeviceAzimuthDeg : mBearingCalAz;
                         float rel = -90f + normalizeDeg(mTagBearingDeg - base);
                         radar.setBearing(rel);
+
+                        // —— 基准正确性诊断（节流 400ms）：打印换算全链路数值，验证设备转动时红点是否指向真实相对方向 ——
+                        long dnow = System.currentTimeMillis();
+                        if (dnow - mLastDiagMs > 400) {
+                            mLastDiagMs = dnow;
+                            float raw = normalizeDeg(mTagBearingDeg - base);   // 指南针式相对角：0=前,90=右,180=后,-90=左
+                            Log.d("BASELINE", String.format(java.util.Locale.US,
+                                "tag=%s calAz=%.1f tagB=%.1f devAz=%.1f base=%.1f rawRel=%.1f radarRel=%.1f computedDir=%s",
+                                (calName != null ? calName : epc), mBearingCalAz, mTagBearingDeg,
+                                mDeviceAzimuthDeg, base, raw, rel, dirOf(raw)));
+                        }
                     }
                     if (matchedOnce[0]) {
                         tvLocStatus.setText("已锁定 ✓  RSSI " + Math.round(fr) + " dBm · 距 " + FormatUtil.formatDistance(dist));
@@ -1564,6 +1576,9 @@ public class MainActivity extends AppCompatActivity {
                                 mLastAutoCalMs = acNow;
                                 mBearingCalAz = normalizeDeg(mDeviceAzimuthDeg - CAL_TAG_ANGLE.get(aCalKey));
                                 saveBearingCal(mBearingCalAz);
+                                Log.d("BASELINE", String.format(java.util.Locale.US,
+                                    "AUTOCAL tag=%s defAngle=%.0f devAz=%.1f -> calAz=%.1f",
+                                    CAL_TAG_NAME.get(aCalKey), CAL_TAG_ANGLE.get(aCalKey), mDeviceAzimuthDeg, mBearingCalAz));
                                 uiHandler.post(() -> {
                                     if (tvCalHint != null)
                                         tvCalHint.setText("已自动校准正前基准 ✓（依据 " + CAL_TAG_NAME.get(aCalKey) + " 方位）");
