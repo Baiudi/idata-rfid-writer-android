@@ -1516,9 +1516,11 @@ public class MainActivity extends AppCompatActivity {
                     lastSeen.set(System.currentTimeMillis());      // 命中目标标签：刷新“最后见到”时间，红点保持不灭
                     if (r > -120f) {
                         lastRssi[0] = r;                          // 有效 RSSI：更新读数（驱动距离估算 + 红点实时跳动）
-                        // 自动校准：目标为标定标签且信号很强(基本正对)时，依其已知方位反推正前基准并持久化
+                        // 自动校准：目标为标定标签且处于近场(>-80dBm，与方位锚定同门限)时，依其已知方位反推正前基准并持久化。
+                        // 注：20CM 等近距离下 RSSI 因天线主瓣方向性差异可达 -50~-70，若阈值过严(如-55)会导致多数标定标签永不触发自动校准，
+                        // 从而 base 回退到实时朝向、所有标签都被算成“正前”，丧失 4 方位区分能力。故与锚定门限保持一致用 -80。
                         String aCalKey = (t.epc == null) ? "" : t.epc.trim().toUpperCase();
-                        if (CAL_TAG_ANGLE.containsKey(aCalKey) && r > -55f) {
+                        if (CAL_TAG_ANGLE.containsKey(aCalKey) && r > -80f) {
                             long acNow = System.currentTimeMillis();
                             if (acNow - mLastAutoCalMs > 1000) {   // 节流：1 秒内最多校准一次
                                 mLastAutoCalMs = acNow;
