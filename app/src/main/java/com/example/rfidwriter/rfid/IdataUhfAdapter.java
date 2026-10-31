@@ -512,9 +512,26 @@ public class IdataUhfAdapter implements RfidSdk {
             } catch (Throwable e) {
                 Log.w(TAG, "registerUHFCallback 绑定失败（退化为纯轮询兜底路径）", e);
             }
-            Object r = callIface("startInventoryTag");
-            boolean started = r instanceof Boolean ? (Boolean) r : (r != null);
-            Log.i(TAG, "startInventory: startInventoryTag 已调用 ret=" + started);
+            // 发起群读：iUHF 偶发返回 false（模组态未就绪），这里重试若干次并每次重申 powerOn + 连续盘点模式
+            boolean started = false;
+            for (int attempt = 1; attempt <= 3 && !started; attempt++) {
+                try {
+                    if (attempt > 1) {
+                        Thread.sleep(300);
+                        powerOn();
+                        setInventoryMode(1);
+                    }
+                    Object r = callIface("startInventoryTag");
+                    started = r instanceof Boolean ? (Boolean) r : (r != null);
+                    Log.i(TAG, "startInventory: startInventoryTag 已调用 attempt=" + attempt + " ret=" + started);
+                } catch (Throwable e) {
+                    Log.w(TAG, "startInventoryTag attempt=" + attempt + " 异常", e);
+                }
+            }
+            if (!started) {
+                // 仍失败：退化为“只轮询”兜底，保证即便 startInventoryTag 失败也能从 readTagFromBuffer 读到标签
+                Log.w(TAG, "startInventoryTag 连续 3 次均返回 false，进入纯轮询兜底模式（仍可读取标签）");
+            }
         } catch (Throwable e) {
             Log.e(TAG, "startInventory failed", e);
         }
