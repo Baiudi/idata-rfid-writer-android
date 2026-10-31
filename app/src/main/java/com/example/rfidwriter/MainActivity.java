@@ -121,6 +121,19 @@ public class MainActivity extends AppCompatActivity {
     private volatile float mPeakRssi = -120f;        // 定位以来观测到的最强 RSSI
     private volatile float mTagBearingDeg = Float.NaN; // 锚定标签方位（信号最强时的设备朝向）
     private ToneGenerator mToneGen;                  // 邻近提示音发生器
+    private volatile float mBearingCalAz = Float.NaN;   // 正前基准（罗盘角，0=北）。NaN=未校准，回退到实时设备朝向
+    private long mLastAutoCalMs = 0;                    // 自动校准节流时间戳
+
+    // 4 方位标定标签：用于校准/确认罗盘正前基准。EPC 大写；angle=标签相对【设备正前】的方位角(度)
+    // A1=前(0)  B1=后(180)  C1=右(90)  D1=左(-90)，与实物摆放一致（用户提供）。
+    private static final java.util.Map<String, String> CAL_TAG_NAME = new java.util.HashMap<>();
+    private static final java.util.Map<String, Float> CAL_TAG_ANGLE = new java.util.HashMap<>();
+    static {
+        CAL_TAG_NAME.put("E2801191A5040079AE927637", "A1"); CAL_TAG_ANGLE.put("E2801191A5040079AE927637", 0f);
+        CAL_TAG_NAME.put("E2801191A5040079AE927627", "B1"); CAL_TAG_ANGLE.put("E2801191A5040079AE927627", 180f);
+        CAL_TAG_NAME.put("E2801191A5040079AE927647", "C1"); CAL_TAG_ANGLE.put("E2801191A5040079AE927647", 90f);
+        CAL_TAG_NAME.put("E2801191A5040079AE927617", "D1"); CAL_TAG_ANGLE.put("E2801191A5040079AE927617", -90f);
+    }
 
     // ----------------- 手柄按键（设备扳机/扫描键）映射 -----------------
     // 在「读取标签/盘点」页第一次按下任意【非系统】键时，自动记住该 keyCode 作为“手柄触发键”（持久化），
@@ -1257,6 +1270,7 @@ public class MainActivity extends AppCompatActivity {
         // —— 标签定位方向支持：启用指南针（加速度计+磁力计），用“信号最强时的设备朝向”锚定标签方位 ——
         mPeakRssi = -120f;
         mTagBearingDeg = Float.NaN;
+        mBearingCalAz = loadBearingCal();   // 加载上次校准的正前基准（若有）
         mSensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
         if (mSensorManager != null) {
             Sensor accel = mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
@@ -1272,7 +1286,10 @@ public class MainActivity extends AppCompatActivity {
                         if (SensorManager.getRotationMatrix(mRotMat, mInclMat, mGravity, mGeomag)) {
                             float[] o = new float[3];
                             SensorManager.getOrientation(mRotMat, o);
-                            mDeviceAzimuthDeg = (float) Math.toDegrees(o[0]); // 0=北，顺时针为正
+                            float newAz = (float) Math.toDegrees(o[0]); // 0=北，顺时针为正
+                            // 低通滤波平滑罗盘抖动（按最短弧插值，避免 ±180° 跳变）
+                            float diff = normalizeDeg(newAz - mDeviceAzimuthDeg);
+                            mDeviceAzimuthDeg = normalizeDeg(mDeviceAzimuthDeg + diff * 0.25f);
                         }
                     }
                     @Override public void onAccuracyChanged(Sensor s, int a) {}
@@ -1288,8 +1305,10 @@ public class MainActivity extends AppCompatActivity {
         int pad = (int) (16 * density);
         root.setPadding(pad, pad, pad, 0);
 
+        String calKey = epc.trim().toUpperCase();
+        String calName = CAL_TAG_NAME.get(calKey);
         TextView tvInfo = new TextView(this);
-        tvInfo.setText("EPC: " + epc);
+        tvInfo.setText("EPC: " + epc + (calName != null ? "   · " + calName + "(标定:" + dirOf(CAL_TAG_ANGLE.get(calKey)) + ")" : ""));
         tvInfo.setTextSize(14);
 
         // 实时状态行：让“搜不到目标”不再表现为空白雷达，而是明确提示当前状态（诊断用）
@@ -1299,6 +1318,33 @@ public class MainActivity extends AppCompatActivity {
         tvLocStatus.setTextSize(13);
         tvLocStatus.setTextColor(0xFFFFEB3B);   // 黄：搜索中
         tvLocStatus.setPadding(0, (int) (4 * density), 0, 0);
+
+        // 校准提示：显示目标是否为标定标签，以及正前基准是否已校准
+        final TextView tvCalHint = new TextView(this);
+        if (calName != null) {
+            String dir = dirOf(CAL_TAG_ANGLE.get(calKey));
+            tvCalHint.setText("检测到标定标签 " + calName + "（应位于设备" + dir + "）。"
+                    + (Float.isNaN(mBearingCalAz) ? "请点【以此方向为正前校准】，或正对该标签近场自动校准。" : "正前基准已校准 ✓"));
+        } else {
+            tvCalHint.setText(Float.isNaN(mBearingCalAz)
+                    ? "未校准正前基准：请把设备正前对准目标，点【以此方向为正前校准】；或定位 A1/B1/C1/D1 近场自动校准。"
+                    : "正前基准已校准 ✓（可在远离时稳定指向标签）");
+        }
+        tvCalHint.setTextSize(12);
+        tvCalHint.setTextColor(0xFF80D8FF);
+        tvCalHint.setPadding(0, (int) (6 * density), 0, 0);
+
+        // 手动校准按钮（蓝色）：把“当前设备朝向”锁定为正前基准并持久化
+        final Button btnCalibrate = new Button(this);
+        btnCalibrate.setText("以此方向为正前校准");
+        btnCalibrate.setBackgroundColor(0xFF1976D2);
+        btnCalibrate.setTextColor(0xFFFFFFFF);
+        btnCalibrate.setOnClickListener(v -> {
+            mBearingCalAz = mDeviceAzimuthDeg;
+            saveBearingCal(mBearingCalAz);
+            Toast.makeText(this, "已校准：当前方向设为正前基准", Toast.LENGTH_SHORT).show();
+            tvCalHint.setText("正前基准已校准 ✓（可在远离时稳定指向标签）");
+        });
 
         // 信号能量条（替代原“信号值”数字显示，蓝框需求：以能量条呈现信号强弱）
         android.widget.LinearLayout sigRow = new android.widget.LinearLayout(this);
@@ -1341,8 +1387,10 @@ public class MainActivity extends AppCompatActivity {
 
         root.addView(tvInfo);
         root.addView(tvLocStatus);
+        root.addView(tvCalHint);
         root.addView(sigRow);
         root.addView(radar);
+        root.addView(btnCalibrate);
         root.addView(btnStop);
 
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
@@ -1412,7 +1460,9 @@ public class MainActivity extends AppCompatActivity {
                     }
                     // 方位：标签锚定方位 − 设备当前朝向 → 相对角度（红点绕圈，转到正上方即正对标签）
                     if (!Float.isNaN(mTagBearingDeg)) {
-                        float rel = -90f + normalizeDeg(mTagBearingDeg - mDeviceAzimuthDeg);
+                        // 相对【校准后的正前基准】而非实时朝向换算，转动设备时红点稳定指向标签
+                        float base = Float.isNaN(mBearingCalAz) ? mDeviceAzimuthDeg : mBearingCalAz;
+                        float rel = -90f + normalizeDeg(mTagBearingDeg - base);
                         radar.setBearing(rel);
                     }
                     if (matchedOnce[0]) {
@@ -1465,8 +1515,22 @@ public class MainActivity extends AppCompatActivity {
                     lastSeen.set(System.currentTimeMillis());      // 命中目标标签：刷新“最后见到”时间，红点保持不灭
                     if (r > -120f) {
                         lastRssi[0] = r;                          // 有效 RSSI：更新读数（驱动距离估算 + 红点实时跳动）
+                        // 自动校准：目标为标定标签且信号很强(基本正对)时，依其已知方位反推正前基准并持久化
+                        String aCalKey = (t.epc == null) ? "" : t.epc.trim().toUpperCase();
+                        if (CAL_TAG_ANGLE.containsKey(aCalKey) && r > -55f) {
+                            long acNow = System.currentTimeMillis();
+                            if (acNow - mLastAutoCalMs > 1000) {   // 节流：1 秒内最多校准一次
+                                mLastAutoCalMs = acNow;
+                                mBearingCalAz = normalizeDeg(mDeviceAzimuthDeg - CAL_TAG_ANGLE.get(aCalKey));
+                                saveBearingCal(mBearingCalAz);
+                                uiHandler.post(() -> {
+                                    if (tvCalHint != null)
+                                        tvCalHint.setText("已自动校准正前基准 ✓（依据 " + CAL_TAG_NAME.get(aCalKey) + " 方位）");
+                                });
+                            }
+                        }
                         // 信号增强则把“当前设备朝向”重新锚定为标签方位（红点随之绕圈指向标签）
-                        if (r > mPeakRssi) {
+                        if (r > -80f && r > mPeakRssi) {   // 仅近场(>-80dBm)才重新锚定方位，避免远场误锁
                             mPeakRssi = r;
                             mTagBearingDeg = mDeviceAzimuthDeg;
                         }
@@ -1541,6 +1605,32 @@ public class MainActivity extends AppCompatActivity {
         float close = Math.max(0f, Math.min(1f, (rssi - (-85f)) / ((-40f) - (-85f))));
         long ms = Math.round(1200f - close * (1200f - 130f));
         return Math.max(130L, ms);
+    }
+
+    // 正前基准（罗盘角）持久化：跨会话保留校准结果，下次打开定位直接可用
+    private void saveBearingCal(float az) {
+        try {
+            SharedPreferences sp = getPreferences(android.content.Context.MODE_PRIVATE);
+            sp.edit().putFloat("bearing_cal_az", az).apply();
+        } catch (Throwable ignore) {}
+    }
+    private float loadBearingCal() {
+        try {
+            SharedPreferences sp = getPreferences(android.content.Context.MODE_PRIVATE);
+            return sp.getFloat("bearing_cal_az", Float.NaN);
+        } catch (Throwable ignore) { return Float.NaN; }
+    }
+    /** 把方位角(度)换算成中文 8 方位（前/前右/右/后右/后/后左/左/前左），用于标定标签提示 */
+    private static String dirOf(float a) {
+        float n = normalizeDeg(a); // [-180,180)
+        if (n >= -22.5f && n < 22.5f) return "前";
+        if (n >= 22.5f && n < 67.5f) return "前右";
+        if (n >= 67.5f && n < 112.5f) return "右";
+        if (n >= 112.5f && n < 157.5f) return "后右";
+        if (n >= 157.5f || n < -157.5f) return "后";
+        if (n >= -157.5f && n < -112.5f) return "后左";
+        if (n >= -112.5f && n < -67.5f) return "左";
+        return "前左";
     }
 
     // ----------------- 单个新增（名称必填，编码自动生成） -----------------
