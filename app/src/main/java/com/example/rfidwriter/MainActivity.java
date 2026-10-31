@@ -1576,6 +1576,7 @@ public class MainActivity extends AppCompatActivity {
                                 mLastAutoCalMs = acNow;
                                 mBearingCalAz = normalizeDeg(mDeviceAzimuthDeg - CAL_TAG_ANGLE.get(aCalKey));
                                 saveBearingCal(mBearingCalAz);
+                                // [diag] 自动校准基准数值（验证用，可保留）
                                 Log.d("BASELINE", String.format(java.util.Locale.US,
                                     "AUTOCAL tag=%s defAngle=%.0f devAz=%.1f -> calAz=%.1f",
                                     CAL_TAG_NAME.get(aCalKey), CAL_TAG_ANGLE.get(aCalKey), mDeviceAzimuthDeg, mBearingCalAz));
