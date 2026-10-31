@@ -527,28 +527,37 @@ public class MainActivity extends AppCompatActivity {
      */
     @Override
     public boolean dispatchKeyEvent(KeyEvent e) {
-        if (e.getAction() == KeyEvent.ACTION_DOWN) {
-            int code = e.getKeyCode();
-            if (currentScreen == SCREEN_READ || currentScreen == SCREEN_INVENTORY) {
-                Log.i(TAG, "KEY keyCode=" + code + " screen=" + currentScreen);
-                // 尚未学习到手柄键：按下任意非系统键即记住它（兼容各机型扳机映射）
-                if (mHandleKey == 0 && !SYSTEM_KEYS_NO_LEARN.contains(code)) {
-                    mHandleKey = code;
-                    prefs.edit().putInt("handleKey", code).apply();
-                    Log.i(TAG, "HANDLE_KEY learned=" + code);
-                    Toast.makeText(this, "已记住手柄按键（keyCode=" + code + "）", Toast.LENGTH_SHORT).show();
-                }
-                if (code == mHandleKey) {
-                    if (currentScreen == SCREEN_READ) {
-                        readFullTag();
-                    } else {
-                        toggleInventoryFromHandle();
-                    }
-                    return true;   // 消费，避免系统重复处理（如 F1 默认行为）
-                }
-            }
+        if ((currentScreen == SCREEN_READ || currentScreen == SCREEN_INVENTORY)
+                && handleHandleKey(e)) {
+            return true;
         }
         return super.dispatchKeyEvent(e);
+    }
+
+    /**
+     * 手柄触发键统一处理：学习键码 + 触发对应页动作。
+     * 被 Activity.dispatchKeyEvent 与盘点弹窗的 OnKeyListener 共用，
+     * 以解决「弹窗打开后按键被 Dialog 截获、导致第二次按键无法暂停盘点」的问题。
+     * 返回 true 表示已消费该按键。
+     */
+    private boolean handleHandleKey(KeyEvent e) {
+        if (e.getAction() != KeyEvent.ACTION_DOWN) return false;
+        int code = e.getKeyCode();
+        Log.i(TAG, "KEY keyCode=" + code + " action=" + e.getAction() + " screen=" + currentScreen);
+        // 尚未学习到手柄键：按下任意非系统键即记住它（兼容各机型扳机映射）
+        if (mHandleKey == 0 && !SYSTEM_KEYS_NO_LEARN.contains(code)) {
+            mHandleKey = code;
+            prefs.edit().putInt("handleKey", code).apply();
+            Log.i(TAG, "HANDLE_KEY learned=" + code);
+            Toast.makeText(this, "已记住手柄按键（keyCode=" + code + "）", Toast.LENGTH_SHORT).show();
+        }
+        if (code != mHandleKey) return false;
+        if (currentScreen == SCREEN_READ) {
+            readFullTag();
+        } else {
+            toggleInventoryFromHandle();
+        }
+        return true;   // 消费，避免系统重复处理（如 F1 默认行为）
     }
 
     /** 盘点页手柄键逻辑：未开始→开始；进行中→暂停/继续切换 */
@@ -1129,7 +1138,14 @@ public class MainActivity extends AppCompatActivity {
                 .setNegativeButton("结束盘点", (dlg, w) -> endInventory())
                 .create();
         invDialog = d;
-        d.setOnDismissListener(di -> { endInventory(); dlgBtnPause = null; });
+        // 弹窗打开后，物理扳机键事件会被 Dialog 截获（不再经过 Activity.dispatchKeyEvent），
+        // 因此这里单独监听弹窗按键，复用 handleHandleKey，恢复「第2下暂停 / 第3下继续」。
+        d.setOnKeyListener((dialog, keyCode, event) -> handleHandleKey(event));
+        d.setOnDismissListener(di -> {
+            uiHandler.removeCallbacks(invRefreshTask);
+            endInventory();
+            dlgBtnPause = null;
+        });
         d.show();
         // 覆盖按钮行为：不自动关窗
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setVisibility(View.GONE);
@@ -1153,13 +1169,19 @@ public class MainActivity extends AppCompatActivity {
                             + "  RSSI:" + (e.getValue()[1] <= -120 ? "--" : String.valueOf(e.getValue()[1]))
                             + (registered ? "  [已登记]" : "  [未登记]"));
                 });
-        if (invDialog != null && invDialog.isShowing()) {
-            invDialog.setTitle((invPaused ? "已暂停：" : (inventorying ? "盘点中：" : "盘点结束："))
-                    + invStats.size() + " 张标签");
-            if (dlgBtnPause != null) {
-                dlgBtnPause.setText(invPaused ? "继续盘点" : "暂停盘点");
+        if (invDialog != null && invDialog.isShowing()
+                && invDialog.getWindow() != null
+                && invDialog.getWindow().getDecorView().isAttachedToWindow()) {
+            try {
+                invDialog.setTitle((invPaused ? "已暂停：" : (inventorying ? "盘点中：" : "盘点结束："))
+                        + invStats.size() + " 张标签");
+                if (dlgBtnPause != null) {
+                    dlgBtnPause.setText(invPaused ? "继续盘点" : "暂停盘点");
+                }
+                invAdapter.notifyDataSetChanged();
+            } catch (IllegalArgumentException ex) {
+                Log.w(TAG, "refreshInventoryViews skip (decor detached): " + ex.getMessage());
             }
-            invAdapter.notifyDataSetChanged();
         }
     }
 
