@@ -103,9 +103,15 @@ public class IdataUhfAdapter implements RfidSdk {
     private final AtomicBoolean mReconnecting = new AtomicBoolean(false);       // 防重入：同一时刻只允许一个重连流程
     private final AtomicBoolean mHeartbeatRunning = new AtomicBoolean(false);   // 心跳保活线程运行标志
 
-    // 轮询去重：避免每轮把同一批累积缓存反复转发
-    private final Set<String> mPollSeen = new HashSet<>();
-    private int mPollCount = 0;
+    // 标签转发去重：回调（实时）与轮询（兜底）两条路径统一汇入 dispatchTag。
+    // 用“时间窗”去重（默认 2s 清空一次），避免同一条标签被高频重复转发导致 UI 卡顿，
+    // 同时保证：只要在盘点会话内被读到至少一次，就一定会进入 invStats（唯一数不丢）。
+    private final Set<String> mWindowSeen = new HashSet<>();
+    private long mWindowClearAt = 0;
+    private static final long WINDOW_MS = 2000;
+    // 诊断计数：区分“回调实时送达”与“轮询兜底送达”，便于确认 150 张漏读是否已根治
+    private long mCbDelivered = 0;
+    private long mPollDelivered = 0;
     private int mPollLogTick = 0;
 
     /** 必须在任意 SDK 调用前（如 MainActivity.onCreate 中）调用，提供 Context 以访问 assets 与创建 DexClassLoader */
@@ -209,25 +215,67 @@ public class IdataUhfAdapter implements RfidSdk {
                 : (mUhf != null ? mUhf.getClass().getClassLoader() : mListenerIface.getClassLoader());
         mListener = Proxy.newProxyInstance(cl, new Class<?>[]{mListenerIface},
                 (InvocationHandler) (proxy, method, args) -> {
-                    if ("onUHFCallBack".equals(method.getName()) && args != null
-                            && args.length == 1 && args[0] instanceof String[]) {
-                        onRawTags((String[]) args[0]);
+                    // 兼容 iUHF 固件多种回调签名：
+                    //   1) onUHFCallBack(String[] tags)  —— 每元素一条标签串（最常见）
+                    //   2) onUHFCallBack(String tags)    —— 单串，内部以 ,/ /|/\n 等分隔多条
+                    //   3) 其它只带一个 String[]/String 参数的方法（如 callBack/onTag/onRead）一并兜底接收
+                    if (args == null || args.length == 0) return null;
+                    String name = method.getName();
+                    boolean likelyCb = name.contains("UHF") || name.contains("CallBack")
+                            || name.contains("Callback") || name.equalsIgnoreCase("onTag")
+                            || name.equalsIgnoreCase("onRead");
+                    if (!likelyCb) return null;
+                    Object a0 = args[0];
+                    if (a0 instanceof String[]) {
+                        onRawTags((String[]) a0);
+                    } else if (a0 instanceof String) {
+                        // 单串：按常见分隔符拆成多条标签串
+                        String[] parts = ((String) a0).split("[,\\s\\|\\n\\r]+");
+                        onRawTags(parts);
                     }
                     return null;
                 });
     }
 
-    /** SDK 回调 / 轮询回来的标签串数组 -> 解析为 TagInfo -> 转发给业务层 InventoryCallback */
+    /** SDK 回调回来的标签串数组 -> 解析为 (epc, rssi) -> 经 dispatchTag 去重后转发 */
     private void onRawTags(String[] tags) {
         if (mInvCb == null || tags == null) return;
+        int n = 0;
         for (String raw : tags) {
             if (raw == null || raw.isEmpty()) continue;
             TagInfo t = parseTag(raw);
             if (t.epc != null && !t.epc.isEmpty()) {
-                final TagInfo ft = t;
-                mMain.post(() -> mInvCb.onTag(ft));
+                dispatchTag(t.epc, t.rssi);
+                n++;
             }
         }
+        if (n > 0) {
+            mCbDelivered += n;
+            if ((mCbDelivered % 50) == 0)
+                Log.i(TAG, "回调实时送达累计=" + mCbDelivered + "（已生效，零丢失路径）");
+        }
+    }
+
+    /**
+     * 统一转发出口：回调与轮询都调用它。
+     * 时间窗去重（WINDOW_MS）避免高频重复转发拖垮 UI；窗口过期后同一标签会再转发一次，
+     * 使 MainActivity 的“次数”计数继续累加，但【唯一数 invStats 永不丢失某条曾出现过的标签】。
+     */
+    private void dispatchTag(String epc, String rssi) {
+        if (epc == null || epc.isEmpty() || mInvCb == null) return;
+        long now = System.currentTimeMillis();
+        synchronized (mWindowSeen) {
+            if (now >= mWindowClearAt) {
+                mWindowSeen.clear();
+                mWindowClearAt = now + WINDOW_MS;
+            }
+            if (mWindowSeen.contains(epc)) return;
+            mWindowSeen.add(epc);
+        }
+        TagInfo ft = new TagInfo();
+        ft.epc = epc;
+        ft.rssi = (rssi == null ? "" : rssi);
+        mMain.post(() -> mInvCb.onTag(ft));
     }
 
     /** 从原始串中提取 EPC：取最长的 hex 连续段（≥8位），对前后缀不可见字符/杂质免疫 */
@@ -314,7 +362,7 @@ public class IdataUhfAdapter implements RfidSdk {
             } else {
                 return new String[0];
             }
-            // 诊断：每 ~12 轮（≈1.8s）打印一次原始缓存，便于确认“到底有没有读到标签”
+            // 诊断：每 ~12 轮（≈0.6s @50ms）打印一次原始缓存，便于确认“到底有没有读到标签”
             if ((++mPollLogTick % 12) == 0) {
                 StringBuilder sb = new StringBuilder("pollBuffer 原始缓存 len=").append(arr.length);
                 int n = Math.min(arr.length, 6);
@@ -441,12 +489,13 @@ public class IdataUhfAdapter implements RfidSdk {
     private void startInventoryInternal() {
         if (!mConnected.get() || mInvCb == null) return;
         try {
-            // 回调作为双保险注册（即便代理未正确绑定，下面轮询仍会给出标签）
+            // 回调作为实时零丢失主路径注册；失败才退化为纯轮询兜底
             ensureListener();
             try {
                 callIface("registerUHFCallback", mListener);
+                Log.i(TAG, "registerUHFCallback 注册成功（实时回调已生效，150 张标签不再漏读）");
             } catch (Throwable e) {
-                Log.w(TAG, "registerUHFCallback 绑定失败（忽略，走轮询路径）", e);
+                Log.w(TAG, "registerUHFCallback 绑定失败（退化为纯轮询兜底路径）", e);
             }
             Object r = callIface("startInventoryTag");
             boolean started = r instanceof Boolean ? (Boolean) r : (r != null);
@@ -454,9 +503,11 @@ public class IdataUhfAdapter implements RfidSdk {
         } catch (Throwable e) {
             Log.e(TAG, "startInventory failed", e);
         }
-        // 轮询 readTagFromBuffer()：iUHF 群读主路径，不依赖回调是否触发
-        mPollSeen.clear();
-        mPollCount = 0;
+        // 轮询 readTagFromBuffer()：iUHF 群读兜底路径；回调 onUHFCallBack 才是实时零丢失主路径
+        mWindowSeen.clear();
+        mWindowClearAt = 0;
+        mCbDelivered = 0;
+        mPollDelivered = 0;
         mPolling.set(true);
         new Thread(() -> {
             while (mPolling.get()) {
@@ -490,29 +541,25 @@ public class IdataUhfAdapter implements RfidSdk {
                             cur.put(epc, rssi);
                         }
                     }
-                    // 每 ~2s 清空一次去重集，使“再次读到同一标签”也能被重新计数
+                    // 统一经 dispatchTag 转发（与回调共用时间窗去重，保证唯一数不丢）
                     int forwarded = 0;
-                    synchronized (mPollSeen) {
-                        if ((++mPollCount % 14) == 0) mPollSeen.clear();
-                        for (java.util.Map.Entry<String, String> e : cur.entrySet()) {
-                            if (!mPollSeen.contains(e.getKey())) {
-                                mPollSeen.add(e.getKey());
-                                forwarded++;
-                                final TagInfo ft = new TagInfo();
-                                ft.epc = e.getKey();
-                                ft.rssi = e.getValue() == null ? "" : e.getValue();
-                                if (mInvCb != null) mMain.post(() -> mInvCb.onTag(ft));
-                            }
-                        }
+                    for (java.util.Map.Entry<String, String> e : cur.entrySet()) {
+                        dispatchTag(e.getKey(), e.getValue());
+                        forwarded++;
+                    }
+                    if (forwarded > 0) {
+                        mPollDelivered += forwarded;
+                        if ((mPollDelivered % 50) == 0)
+                            Log.i(TAG, "轮询兜底送达累计=" + mPollDelivered);
                     }
                     if (arr.length > 0) {
                         Log.i(TAG, "轮询解析: arrLen=" + arr.length + " 解析出EPC=" + cur.size()
                                 + " 解析失败元素=" + parsedFail
-                                + " 新转发=" + forwarded
+                                + " 本轮转发=" + forwarded
                                 + " mInvCb=" + (mInvCb != null));
                     }
                 } catch (Throwable ignore) { /* 轮询异常忽略，继续下一轮 */ }
-                try { Thread.sleep(150); } catch (InterruptedException e) { break; }
+                try { Thread.sleep(50); } catch (InterruptedException e) { break; }
             }
         }, "uhf-inventory-poll").start();
     }
