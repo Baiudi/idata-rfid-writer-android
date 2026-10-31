@@ -11,14 +11,6 @@
         android:layout_height="wrap_content"
         android:text="@string/btn_inventory" />
 
-    <Button
-        android:id="@+id/btnLocate"
-        style="@style/Widget.RfidWriter.OutlineButton"
-        android:layout_width="match_parent"
-        android:layout_height="wrap_content"
-        android:layout_marginTop="6dp"
-        android:text="@string/btn_locate" />
-
     <!-- 实时统计卡片 -->
     <LinearLayout
         android:layout_width="match_parent"

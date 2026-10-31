@@ -316,13 +316,7 @@ public class MainActivity extends AppCompatActivity {
         tvInvCount = r.findViewById(R.id.tvInvCount);
         tvLastEpc = r.findViewById(R.id.tvLastEpc);
         btnInventory.setOnClickListener(v -> toggleInventory());
-        r.findViewById(R.id.btnLocate).setOnClickListener(v -> {
-            if (lastDetectedTag != null && !nz(lastDetectedTag.epc).isEmpty()) {
-                locateTag(lastDetectedTag.epc);
-            } else {
-                Toast.makeText(this, "请先到「读写标签→读取标签」检测一张标签，或从盘点结果中点击要定位的标签", Toast.LENGTH_LONG).show();
-            }
-        });
+        // 注：主界面不再放置「定位标签」按钮；标签定位统一从盘点结果列表中点击具体标签进入。
         RecyclerView rv = r.findViewById(R.id.rvResults);
         rv.setLayoutManager(new LinearLayoutManager(this));
         adapter = new ResultAdapter(ledger);
@@ -1298,6 +1292,14 @@ public class MainActivity extends AppCompatActivity {
         tvInfo.setText("EPC: " + epc);
         tvInfo.setTextSize(14);
 
+        // 实时状态行：让“搜不到目标”不再表现为空白雷达，而是明确提示当前状态（诊断用）
+        TextView tvLocStatus = new TextView(this);
+        tvLocStatus.setId(android.view.View.generateViewId());
+        tvLocStatus.setText("正在搜索目标标签…");
+        tvLocStatus.setTextSize(13);
+        tvLocStatus.setTextColor(0xFFFFEB3B);   // 黄：搜索中
+        tvLocStatus.setPadding(0, (int) (4 * density), 0, 0);
+
         // 信号能量条（替代原“信号值”数字显示，蓝框需求：以能量条呈现信号强弱）
         android.widget.LinearLayout sigRow = new android.widget.LinearLayout(this);
         sigRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
@@ -1338,6 +1340,7 @@ public class MainActivity extends AppCompatActivity {
         btnStop.setOnClickListener(v -> { locating = false; btnStop.setEnabled(false); btnStop.setText("已停止"); });
 
         root.addView(tvInfo);
+        root.addView(tvLocStatus);
         root.addView(sigRow);
         root.addView(radar);
         root.addView(btnStop);
@@ -1378,6 +1381,8 @@ public class MainActivity extends AppCompatActivity {
         final java.util.concurrent.atomic.AtomicLong lastSeen = new java.util.concurrent.atomic.AtomicLong(0);
         final long LOCATE_HOLD_MS = 2000L;                   // 信号保持窗口：2 秒无新读数才判定丢失
         final boolean[] framePending = {false};             // 防止 onTag 高频重绘排队
+        final boolean[] matchedOnce = {false};              // 是否已命中目标标签（用于状态提示）
+        final int[] mLocSeenCount = {0};                   // 定位期间收到的标签回调计数（诊断用）
 
         // 每帧重绘：根据最近读数刷新雷达/能量条/信号文本，并把“标签方位−设备朝向”换算成红点相对角度
         final Runnable applyLocateFrame = new Runnable() {
@@ -1391,6 +1396,8 @@ public class MainActivity extends AppCompatActivity {
                     energyBar.setLevel(0f);
                     tvDbm.setText("--");
                     tvDbm.setTextColor(0xFFB0BEC5);
+                    tvLocStatus.setText("搜索中… 已读到 " + mLocSeenCount[0] + " 个标签，未命中目标");
+                    tvLocStatus.setTextColor(0xFFFFEB3B);
                 } else {
                     float dist = FormatUtil.estimateDistanceMeters(fr, txPower);
                     radar.setRssiDbm(fr, dist);
@@ -1407,6 +1414,10 @@ public class MainActivity extends AppCompatActivity {
                     if (!Float.isNaN(mTagBearingDeg)) {
                         float rel = -90f + normalizeDeg(mTagBearingDeg - mDeviceAzimuthDeg);
                         radar.setBearing(rel);
+                    }
+                    if (matchedOnce[0]) {
+                        tvLocStatus.setText("已锁定 ✓  RSSI " + Math.round(fr) + " dBm · 距 " + FormatUtil.formatDistance(dist));
+                        tvLocStatus.setTextColor(0xFF69F0AE);   // 绿：已锁定
                     }
                 }
             }
@@ -1442,10 +1453,14 @@ public class MainActivity extends AppCompatActivity {
             }
         };
 
-        sdk.startInventory(new RfidSdk.InventoryCallback() {
+        // 定位读取回调（抽成可复用变量，供 600ms 自愈重试复用，避免重复实现）
+        final RfidSdk.InventoryCallback locateCb = new RfidSdk.InventoryCallback() {
             @Override public void onTag(TagInfo t) {
-                boolean match = epc.equals(t.epc);
+                mLocSeenCount[0]++;
+                // 大小写/空格不敏感匹配，避免 EPC 格式差异（hex 大小写、前后空格）导致“永远匹配不上”
+                boolean match = epcEq(epc, t.epc);
                 if (match) {
+                    matchedOnce[0] = true;
                     float r = parseRssi(t.rssi);
                     lastSeen.set(System.currentTimeMillis());      // 命中目标标签：刷新“最后见到”时间，红点保持不灭
                     if (r > -120f) {
@@ -1467,17 +1482,50 @@ public class MainActivity extends AppCompatActivity {
                         framePending[0] = true;
                         uiHandler.post(() -> { framePending[0] = false; applyLocateFrame.run(); });
                     }
+                } else if (mLocSeenCount[0] <= 5) {
+                    // 诊断：前几次非命中样本打印，便于排查 EPC 格式不一致
+                    Log.i(TAG, "locate 收到非目标标签 epc=" + t.epc + " (目标=" + epc + ")");
                 }
             }
             @Override public void onEnd() {}
-        });
+        };
+
+        sdk.startInventory(locateCb);
+
+        // 自愈：iUHF 的 startInventoryTag 在“从盘点切到定位”时偶发不生效（原生会话未真正重启），
+        // 表现为轮询线程在跑却收不到任何标签回调。若 600ms 内一条回调都没有，自动重启一次定位盘点。
+        uiHandler.postDelayed(() -> {
+            if (locating && mLocSeenCount[0] == 0) {
+                Log.w(TAG, "locate 自愈：600ms 内无标签回调，重启定位盘点");
+                try { sdk.stopInventory(); } catch (Throwable ignore) {}
+                sdk.startInventory(locateCb);
+            }
+        }, 600);
 
         uiHandler.post(locateTick);
         uiHandler.post(audioTick);
+
+        // 诊断：记录定位启动（目标 EPC + 是否由盘点发起），便于用 logcat 排查“搜不到标签”
+        Log.i(TAG, "locateTag 启动: epc=" + epc + " fromInventory=" + locateFromInventory
+                + " inventorying=" + inventorying + " invPaused=" + invPaused);
+
+        // 3 秒仍未命中目标：给出明确提示（而非空白雷达），引导用户靠近 / 确认标签在范围内
+        uiHandler.postDelayed(() -> {
+            if (locating && !matchedOnce[0]) {
+                tvLocStatus.setText("⚠ 3 秒内未检测到该标签：请靠近标签，或确认它仍在天线范围内");
+                tvLocStatus.setTextColor(0xFFFF5252);   // 红：告警
+            }
+        }, 3000);
     }
 
     private static float parseRssi(String s) {
         try { return Float.parseFloat(s); } catch (Exception e) { return -120f; }
+    }
+
+    /** 大小写 / 空格不敏感的 EPC 比较（hex 大小写、前后空格差异不应导致匹配失败） */
+    private static boolean epcEq(String a, String b) {
+        if (a == null || b == null) return false;
+        return a.trim().equalsIgnoreCase(b.trim());
     }
 
     /** 把角度归一化到 [-180, 180) */
