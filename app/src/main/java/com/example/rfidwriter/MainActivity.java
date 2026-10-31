@@ -1165,7 +1165,11 @@ public class MainActivity extends AppCompatActivity {
                 .setNegativeButton("结束盘点", (dlg, w) -> endInventory())
                 .create();
         invDialog = d;
-        d.setOnDismissListener(di -> { endInventory(); dlgBtnPause = null; });
+        d.setOnDismissListener(di -> {
+            uiHandler.removeCallbacks(invRefreshTask); // 取消可能挂起的刷新任务，避免弹窗销毁途中触发刷新崩溃
+            endInventory();
+            dlgBtnPause = null;
+        });
         d.show();
         // 覆盖按钮行为：不自动关窗
         d.getButton(android.app.AlertDialog.BUTTON_POSITIVE).setVisibility(View.GONE);
@@ -1207,13 +1211,22 @@ public class MainActivity extends AppCompatActivity {
                             + "  RSSI:" + (e.getValue()[1] <= -120 ? "--" : String.valueOf(e.getValue()[1]))
                             + (registered ? "  [已登记]" : "  [未登记]"));
                 });
-        if (invDialog != null && invDialog.isShowing()) {
-            invDialog.setTitle((invPaused ? "已暂停：" : (inventorying ? "盘点中：" : "盘点结束："))
-                    + invStats.size() + " 张标签");
-            if (dlgBtnPause != null) {
-                dlgBtnPause.setText(invPaused ? "继续盘点" : "暂停盘点");
+        // 守卫：isShowing() 在弹窗 dismiss 拆除过程中仍可能返回 true，但 DecorView 已脱离 WindowManager，
+        // 此时 setTitle/updateViewLayout 会抛 IllegalArgumentException（“not attached to window manager”）。
+        // 必须再判断 isAttachedToWindow()，并对对话框操作做防御性 try/catch，避免刷新定时器在弹窗销毁途中触发崩溃。
+        if (invDialog != null && invDialog.isShowing()
+                && invDialog.getDecorView() != null
+                && invDialog.getDecorView().isAttachedToWindow()) {
+            try {
+                invDialog.setTitle((invPaused ? "已暂停：" : (inventorying ? "盘点中：" : "盘点结束："))
+                        + invStats.size() + " 张标签");
+                if (dlgBtnPause != null) {
+                    dlgBtnPause.setText(invPaused ? "继续盘点" : "暂停盘点");
+                }
+                invAdapter.notifyDataSetChanged();
+            } catch (IllegalArgumentException ignore) {
+                // 弹窗正在拆除，忽略“not attached to window manager”
             }
-            invAdapter.notifyDataSetChanged();
         }
     }
 
