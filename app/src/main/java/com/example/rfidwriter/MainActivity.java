@@ -22,6 +22,13 @@ import android.widget.ScrollView;
 import android.widget.TextView;
 import android.widget.Toast;
 
+import android.hardware.Sensor;
+import android.hardware.SensorEvent;
+import android.hardware.SensorEventListener;
+import android.hardware.SensorManager;
+import android.media.AudioManager;
+import android.media.ToneGenerator;
+
 import androidx.annotation.NonNull;
 import androidx.appcompat.app.AppCompatActivity;
 import androidx.recyclerview.widget.LinearLayoutManager;
@@ -102,6 +109,18 @@ public class MainActivity extends AppCompatActivity {
     private volatile boolean locating = false;
     private volatile boolean reading = false;       // 读取中（防止手柄连按并发读取）
     private boolean locateFromInventory = false;   // 本次定位是否由盘点弹窗发起（关闭后自动回盘点）
+
+    // 标签定位：指南针 + 邻近声音提示所需状态
+    private SensorManager mSensorManager;
+    private SensorEventListener mLocateSensorListener;
+    private final float[] mGravity = new float[3];
+    private final float[] mGeomag = new float[3];
+    private final float[] mRotMat = new float[9];
+    private final float[] mInclMat = new float[9];
+    private volatile float mDeviceAzimuthDeg = 0f;   // 设备当前朝向（罗盘，0=北，顺时针+）
+    private volatile float mPeakRssi = -120f;        // 定位以来观测到的最强 RSSI
+    private volatile float mTagBearingDeg = Float.NaN; // 锚定标签方位（信号最强时的设备朝向）
+    private ToneGenerator mToneGen;                  // 邻近提示音发生器
 
     // ----------------- 手柄按键（设备扳机/扫描键）映射 -----------------
     // 在「读取标签/盘点」页第一次按下任意【非系统】键时，自动记住该 keyCode 作为“手柄触发键”（持久化），
@@ -1241,6 +1260,34 @@ public class MainActivity extends AppCompatActivity {
         sdk.setInventoryMode(1);
         final float txPower = getParam("power", 30); // 距离估算用的假设发射功率（不再调 setPower，避免打崩 iUHF 服务）
 
+        // —— 标签定位方向支持：启用指南针（加速度计+磁力计），用“信号最强时的设备朝向”锚定标签方位 ——
+        mPeakRssi = -120f;
+        mTagBearingDeg = Float.NaN;
+        mSensorManager = (SensorManager) getSystemService(SENSOR_SERVICE);
+        if (mSensorManager != null) {
+            Sensor accel = mSensorManager.getDefaultSensor(Sensor.TYPE_ACCELEROMETER);
+            Sensor mag = mSensorManager.getDefaultSensor(Sensor.TYPE_MAGNETIC_FIELD);
+            if (accel != null && mag != null) {
+                mLocateSensorListener = new SensorEventListener() {
+                    @Override public void onSensorChanged(SensorEvent e) {
+                        if (e.sensor.getType() == Sensor.TYPE_ACCELEROMETER) {
+                            System.arraycopy(e.values, 0, mGravity, 0, 3);
+                        } else if (e.sensor.getType() == Sensor.TYPE_MAGNETIC_FIELD) {
+                            System.arraycopy(e.values, 0, mGeomag, 0, 3);
+                        }
+                        if (SensorManager.getRotationMatrix(mRotMat, mInclMat, mGravity, mGeomag)) {
+                            float[] o = new float[3];
+                            SensorManager.getOrientation(mRotMat, o);
+                            mDeviceAzimuthDeg = (float) Math.toDegrees(o[0]); // 0=北，顺时针为正
+                        }
+                    }
+                    @Override public void onAccuracyChanged(Sensor s, int a) {}
+                };
+                mSensorManager.registerListener(mLocateSensorListener, accel, SensorManager.SENSOR_DELAY_UI);
+                mSensorManager.registerListener(mLocateSensorListener, mag, SensorManager.SENSOR_DELAY_UI);
+            }
+        }
+
         float density = getResources().getDisplayMetrics().density;
         android.widget.LinearLayout root = new android.widget.LinearLayout(this);
         root.setOrientation(android.widget.LinearLayout.VERTICAL);
@@ -1304,6 +1351,12 @@ public class MainActivity extends AppCompatActivity {
             locating = false;
             sdk.setLedBlink(false);
             sdk.stopInventory();
+            // 反注册指南针传感器，释放邻近提示音资源
+            if (mSensorManager != null && mLocateSensorListener != null) {
+                mSensorManager.unregisterListener(mLocateSensorListener);
+                mLocateSensorListener = null;
+            }
+            if (mToneGen != null) { mToneGen.release(); mToneGen = null; }
             // 规避切电：不再调用 setInventoryMode(0)，保留连续盘点模式。
             // 定位是由盘点发起的：关闭后自动回到盘点会话继续（保留统计、累加读取）
             if (locateFromInventory) {
@@ -1319,33 +1372,17 @@ public class MainActivity extends AppCompatActivity {
         d.show();
 
         // 单次开启连续盘点，回调里【只】更新 lastRssi / lastSeen 时间戳（绝不触碰电源、不切电、不调 stopInventory）；
-        // 由 150ms 的 UI Handler 定时器驱动重绘：距上次读到 < 2000ms 就显示 lastRssi（红点稳定停留），
+        // 由 UI Handler 驱动重绘：距上次读到 < 2000ms 就显示 lastRssi（红点稳定停留），
         // 超过 2 秒静默才回退“未捕捉到目标标签”——实现信号保持 + 优雅缓降，远离时红点平滑淡出。
         final float[] lastRssi = {-120f};
         final java.util.concurrent.atomic.AtomicLong lastSeen = new java.util.concurrent.atomic.AtomicLong(0);
-        sdk.startInventory(new RfidSdk.InventoryCallback() {
-            @Override public void onTag(TagInfo t) {
-                boolean match = epc.equals(t.epc);
-                if (match) {
-                    float r = parseRssi(t.rssi);
-                    lastSeen.set(System.currentTimeMillis());      // 命中目标标签：刷新“最后见到”时间，红点保持不灭
-                    if (r > -120f) {
-                        lastRssi[0] = r;                          // 有效 RSSI：更新读数（驱动距离估算 + 红点实时跳动）
-                    } else if (lastRssi[0] <= -120f) {
-                        // 本帧 RSSI 缺失（iUHF 缓存偶发“EPC 不带 RSSI”），但标签确已命中：
-                        // 给一个保守近场默认值，立即显示红点，不再回退“未捕捉到目标标签”
-                        lastRssi[0] = -55f;
-                    }
-                    // 已有有效读数时本帧缺失不覆盖，红点保持稳定
-                }
-            }
-            @Override public void onEnd() {}
-        });
-
         final long LOCATE_HOLD_MS = 2000L;                   // 信号保持窗口：2 秒无新读数才判定丢失
-        final Runnable locateTick = new Runnable() {
+        final boolean[] framePending = {false};             // 防止 onTag 高频重绘排队
+
+        // 每帧重绘：根据最近读数刷新雷达/能量条/信号文本，并把“标签方位−设备朝向”换算成红点相对角度
+        final Runnable applyLocateFrame = new Runnable() {
             @Override public void run() {
-                if (!locating) return;                       // 已停止定位（关闭/停止按钮）→ 停止重绘，不再续排
+                if (!locating) return;
                 long now = System.currentTimeMillis();
                 long since = (lastSeen.get() == 0) ? Long.MAX_VALUE : (now - lastSeen.get());
                 final float fr = (since >= LOCATE_HOLD_MS) ? -120f : lastRssi[0];
@@ -1366,15 +1403,96 @@ public class MainActivity extends AppCompatActivity {
                         tvDbm.setText(Math.round(fr) + " dBm");
                         tvDbm.setTextColor(0xFFB0BEC5);
                     }
+                    // 方位：标签锚定方位 − 设备当前朝向 → 相对角度（红点绕圈，转到正上方即正对标签）
+                    if (!Float.isNaN(mTagBearingDeg)) {
+                        float rel = -90f + normalizeDeg(mTagBearingDeg - mDeviceAzimuthDeg);
+                        radar.setBearing(rel);
+                    }
                 }
-                uiHandler.postDelayed(this, 150);            // 150ms 节流重绘，红点停留明显变长
             }
         };
+
+        final Runnable locateTick = new Runnable() {
+            @Override public void run() {
+                if (!locating) return;                       // 已停止定位（关闭/停止按钮）→ 停止重绘，不再续排
+                applyLocateFrame.run();
+                uiHandler.postDelayed(this, 50);             // 50ms 节流重绘（20fps），红点停留明显变长且跟手
+            }
+        };
+
+        // 邻近声音提示：越近（RSSI 越大）提示音越急促，越远（RSSI 越小）越平缓
+        try {
+            mToneGen = new ToneGenerator(AudioManager.STREAM_MUSIC, 85);
+        } catch (RuntimeException ex) {
+            Log.w(TAG, "ToneGenerator init failed, 邻近提示音不可用: " + ex.getMessage());
+            mToneGen = null;
+        }
+        final Runnable audioTick = new Runnable() {
+            @Override public void run() {
+                if (!locating || mToneGen == null) return;
+                float r = lastRssi[0];
+                if (r > -120f) {
+                    try {
+                        mToneGen.startTone(ToneGenerator.TONE_CDMA_PIP, 55);
+                    } catch (RuntimeException ignore) { /* 音频瞬间不可用，忽略 */ }
+                    uiHandler.postDelayed(this, rssiToBeepInterval(r));
+                } else {
+                    uiHandler.postDelayed(this, 1200);       // 未捕捉：极慢静默节拍
+                }
+            }
+        };
+
+        sdk.startInventory(new RfidSdk.InventoryCallback() {
+            @Override public void onTag(TagInfo t) {
+                boolean match = epc.equals(t.epc);
+                if (match) {
+                    float r = parseRssi(t.rssi);
+                    lastSeen.set(System.currentTimeMillis());      // 命中目标标签：刷新“最后见到”时间，红点保持不灭
+                    if (r > -120f) {
+                        lastRssi[0] = r;                          // 有效 RSSI：更新读数（驱动距离估算 + 红点实时跳动）
+                        // 信号增强则把“当前设备朝向”重新锚定为标签方位（红点随之绕圈指向标签）
+                        if (r > mPeakRssi) {
+                            mPeakRssi = r;
+                            mTagBearingDeg = mDeviceAzimuthDeg;
+                        }
+                    } else if (lastRssi[0] <= -120f) {
+                        // 本帧 RSSI 缺失（iUHF 缓存偶发“EPC 不带 RSSI”），但标签确已命中：
+                        // 给一个保守近场默认值，立即显示红点，并锚定当前朝向
+                        lastRssi[0] = -55f;
+                        if (Float.isNaN(mTagBearingDeg)) mTagBearingDeg = mDeviceAzimuthDeg;
+                    }
+                    // 已有有效读数时本帧缺失不覆盖，红点保持稳定
+                    // 即时刷新（不等 50ms tick），消除信号读取延迟感
+                    if (!framePending[0]) {
+                        framePending[0] = true;
+                        uiHandler.post(() -> { framePending[0] = false; applyLocateFrame.run(); });
+                    }
+                }
+            }
+            @Override public void onEnd() {}
+        });
+
         uiHandler.post(locateTick);
+        uiHandler.post(audioTick);
     }
 
     private static float parseRssi(String s) {
         try { return Float.parseFloat(s); } catch (Exception e) { return -120f; }
+    }
+
+    /** 把角度归一化到 [-180, 180) */
+    private static float normalizeDeg(float deg) {
+        float d = deg % 360f;
+        if (d > 180f) d -= 360f;
+        if (d < -180f) d += 360f;
+        return d;
+    }
+
+    /** 邻近提示音间隔(ms)：信号越强(越近)间隔越短→越急促；-40dBm≈130ms，-85dBm≈1200ms */
+    private static long rssiToBeepInterval(float rssi) {
+        float close = Math.max(0f, Math.min(1f, (rssi - (-85f)) / ((-40f) - (-85f))));
+        long ms = Math.round(1200f - close * (1200f - 130f));
+        return Math.max(130L, ms);
     }
 
     // ----------------- 单个新增（名称必填，编码自动生成） -----------------

@@ -3,6 +3,7 @@ package com.example.rfidwriter;
 import android.content.Context;
 import android.graphics.Canvas;
 import android.graphics.Paint;
+import android.graphics.Path;
 import android.view.View;
 
 import com.example.rfidwriter.util.FormatUtil;
@@ -13,17 +14,20 @@ import com.example.rfidwriter.util.FormatUtil;
  * 设计要点（对照需求）：
  *  - 扫描线【持续旋转】，作为“正在扫描”的视觉提示；
  *  - 红色目标点【固定在表盘上的真实位置】，绝不随扫描线转圈：
- *      方位角 = 固定参考方向（DOT_BEARING_DEG，正前方/-90°，即 12 点方向）；
+ *      方位角 = 由指南针换算的“相对方位”（默认正前方 -90°，即 12 点方向）；
  *      半径   = 由实时 RSSI 估算的距离（信号越强/越近 → 越靠近圆心）。
  *    说明：iData UHF 模组只回传 RSSI（距离），不回传方向，因此“位置”用
- *          （固定方位 + 实时半径）表达；若日后接入方向/相位数据，只需把
- *          DOT_BEARING_DEG 换成真实方位角即可（一行改动）。
+ *          （相对方位 + 实时半径）表达。相对方位由 MainActivity 依据
+ *          “标签锚定方位 − 设备当前朝向”传入（setBearing），转动设备时红点会绕圈，
+ *          转到正上方（12 点）即表示【正对标签】，雷达同时显示中文方位提示（前/后/左/右）。
+ *  - 顶部青色小三角表示【设备正前方】；红点与圆心连线指示标签相对方向；
  *  - 每次收到有效读数触发一次“脉冲”扩散环，强化“实时”观感；
  *  - 未捕捉到目标时红点淡出、表盘边缘显示空心搜索环，区分“搜素中/已锁定”。
  */
 public class RadarView extends View {
 
-    private static final float DOT_BEARING_DEG = -90f; // 固定方位：正前方（12 点方向）
+    private float mBearingDeg = -90f; // 目标相对方位角（度）：-90=正前方(12点),0=正右,90=正后；由指南针动态设置
+    private String mBearingHint = "前";
     private static final int TRAIL = 12;               // 扫描拖尾段数
     private static final long PING_MS = 650;           // 脉冲扩散时长
 
@@ -44,6 +48,8 @@ public class RadarView extends View {
     private final Paint mPing = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mSearch = new Paint(Paint.ANTI_ALIAS_FLAG);
     private final Paint mText = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mFront = new Paint(Paint.ANTI_ALIAS_FLAG);
+    private final Paint mLine = new Paint(Paint.ANTI_ALIAS_FLAG);
 
     public RadarView(Context c) {
         super(c);
@@ -77,9 +83,15 @@ public class RadarView extends View {
         mSearch.setStrokeWidth(2f);
         mSearch.setColor(0x556CFF6B);                   // 搜索空心环
 
-        mText.setColor(0xFFB9F6CA);                     // 距离文本：浅绿
-        mText.setTextSize(26f);
+        mText.setColor(0xFFB9F6CA);                     // 距离/方位文本：浅绿
         mText.setTextAlign(Paint.Align.CENTER);
+
+        mFront.setStyle(Paint.Style.FILL);
+        mFront.setColor(0xAA00E5FF);                    // 设备正前方指示：青
+
+        mLine.setStyle(Paint.Style.STROKE);
+        mLine.setStrokeWidth(2f);
+        mLine.setColor(0x80FF1744);                     // 红点指向线：半透明红
     }
 
     /** 用 dBm 设置信号强度（-90..-30 映射到 0..1） */
@@ -95,6 +107,22 @@ public class RadarView extends View {
         mHasTarget = !Float.isNaN(distanceMeters);
         mDistance = FormatUtil.formatDistance(distanceMeters);
         if (mHasTarget) mPingStart = System.currentTimeMillis(); // 触发脉冲
+        invalidate();
+    }
+
+    /**
+     * 设置目标相对方位角（度）：-90=正前方(12点),0=正右,90=正后；
+     * 由 MainActivity 依据指南针（标签锚定方位 − 设备当前朝向）传入。
+     * 同时换算出中文方位提示（前/后/左/右）叠加显示。
+     */
+    public void setBearing(float deg) {
+        mBearingDeg = deg;
+        double a = Math.toRadians(deg + 90f);   // 0 = 正前
+        double x = Math.sin(a), y = Math.cos(a); // x:右+, y:前+
+        StringBuilder sb = new StringBuilder();
+        if (y >= 0) sb.append("前"); else sb.append("后");
+        if (x > 0.35) sb.append("右"); else if (x < -0.35) sb.append("左");
+        mBearingHint = sb.toString();
         invalidate();
     }
 
@@ -126,6 +154,14 @@ public class RadarView extends View {
         canvas.drawLine(cx - R, cy, cx + R, cy, mRing);
         canvas.drawLine(cx, cy - R, cx, cy + R, mRing);
 
+        // 设备正前方指示（顶部青色小三角）：红点相对此方向的夹角即标签方位
+        Path front = new Path();
+        front.moveTo(cx, cy - R + 6f);
+        front.lineTo(cx - 9f, cy - R + 22f);
+        front.lineTo(cx + 9f, cy - R + 22f);
+        front.close();
+        canvas.drawPath(front, mFront);
+
         // 旋转扫描线（带拖尾彗星效果）
         mSweepDeg = (mSweepDeg + 3.5f) % 360f;
         for (int i = 0; i < TRAIL; i++) {
@@ -142,12 +178,16 @@ public class RadarView extends View {
                 cx + (float) Math.cos(sr) * R,
                 cy + (float) Math.sin(sr) * R, mSweep);
 
-        // 目标点：固定方位角 + 实时半径（绝不随扫描旋转）
-        double dotRad = Math.toRadians(DOT_BEARING_DEG);
+        // 目标点：相对方位角 + 实时半径（绝不随扫描旋转）
+        double dotRad = Math.toRadians(mBearingDeg);
         if (mHasTarget && mStrength > 0.02f) {
             float dotR = (1f - mStrength) * R;          // 越近越靠近圆心
             float dx = cx + (float) Math.cos(dotRad) * dotR;
             float dy = cy + (float) Math.sin(dotRad) * dotR;
+
+            // 红点指向线（圆心→红点，强调方向）
+            mLine.setAlpha(160);
+            canvas.drawLine(cx, cy, dx, dy, mLine);
 
             // 辉光
             mDotGlow.setAlpha((int) (110 + 90 * mStrength));
@@ -172,9 +212,12 @@ public class RadarView extends View {
                     cy + (float) Math.sin(dotRad) * R, 8f, mSearch);
         }
 
-        // 估算距离（圆形表盘内底部，替代原独立“估算距离”文字标签）
+        // 估算距离（圆形表盘内底部）
         mText.setTextSize(22f);
         canvas.drawText(mDistance, cx, cy + R * 0.72f, mText);
+        // 方位提示（距离下方）
+        mText.setTextSize(20f);
+        canvas.drawText("方位 " + mBearingHint, cx, cy + R * 0.72f + 26f, mText);
 
         postInvalidateDelayed(30); // 持续动画
     }
