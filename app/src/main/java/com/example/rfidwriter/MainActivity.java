@@ -1380,24 +1380,54 @@ public class MainActivity extends AppCompatActivity {
         radar.setLayoutParams(new android.widget.LinearLayout.LayoutParams(
                 ViewGroup.LayoutParams.MATCH_PARENT, Math.round(300 * density)));
 
+        // 停止定位（红钮）：停止本次定位循环，弹窗保持以便查看最终状态
         Button btnStop = new Button(this);
         btnStop.setText("停止定位");
+        btnStop.setTextSize(14);
         btnStop.setBackgroundColor(0xFFD32F2F);
         btnStop.setTextColor(0xFFFFFFFF);
         btnStop.setOnClickListener(v -> { locating = false; btnStop.setEnabled(false); btnStop.setText("已停止"); });
 
-        root.addView(tvInfo);
-        root.addView(tvLocStatus);
-        root.addView(tvCalHint);
-        root.addView(sigRow);
-        root.addView(radar);
-        root.addView(btnCalibrate);
-        root.addView(btnStop);
+        // “以此方向为正前校准”改为小按钮（不再通栏大蓝钮），与停止定位并排
+        btnCalibrate.setTextSize(12);
+        btnCalibrate.setPadding((int)(10 * density), (int)(8 * density), (int)(10 * density), (int)(8 * density));
+
+        // 关闭（文字钮）
+        TextView btnClose = new TextView(this);
+        btnClose.setText("关闭");
+        btnClose.setTextSize(14);
+        btnClose.setTextColor(0xFF1976D2);
+        btnClose.setGravity(android.view.Gravity.CENTER);
+        btnClose.setPadding((int)(18 * density), (int)(8 * density), (int)(18 * density), (int)(8 * density));
+
+        // 底部按钮行：校准(小) + 停止定位(红) + 关闭，固定可见、必可按到
+        android.widget.LinearLayout btnRow = new android.widget.LinearLayout(this);
+        btnRow.setOrientation(android.widget.LinearLayout.HORIZONTAL);
+        btnRow.setPadding(0, (int)(8 * density), 0, 0);
+        btnRow.addView(btnCalibrate, new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        btnRow.addView(btnStop, new android.widget.LinearLayout.LayoutParams(0, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, 1f));
+        btnRow.addView(btnClose, new android.widget.LinearLayout.LayoutParams(android.widget.LinearLayout.LayoutParams.WRAP_CONTENT, android.widget.LinearLayout.LayoutParams.WRAP_CONTENT));
+
+        // 可滚动内容区（信息+雷达），与底部按钮行分离，保证按钮始终可见可按
+        android.widget.LinearLayout contentInner = new android.widget.LinearLayout(this);
+        contentInner.setOrientation(android.widget.LinearLayout.VERTICAL);
+        contentInner.addView(tvInfo);
+        contentInner.addView(tvLocStatus);
+        contentInner.addView(tvCalHint);
+        contentInner.addView(sigRow);
+        contentInner.addView(radar);
+
+        android.widget.ScrollView scroll = new android.widget.ScrollView(this);
+        scroll.addView(contentInner);
+        scroll.setLayoutParams(new android.widget.LinearLayout.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, 0, 1f));
+
+        root.addView(scroll);
+        root.addView(btnRow);
+        root.setLayoutParams(new ViewGroup.LayoutParams(ViewGroup.LayoutParams.MATCH_PARENT, ViewGroup.LayoutParams.MATCH_PARENT));
 
         android.app.AlertDialog d = new android.app.AlertDialog.Builder(this)
                 .setTitle("标签定位")
                 .setView(root)
-                .setNegativeButton("关闭", null)
                 .create();
         d.setOnDismissListener(di -> {
             locating = false;
@@ -1422,6 +1452,14 @@ public class MainActivity extends AppCompatActivity {
             }
         });
         d.show();
+        btnClose.setOnClickListener(v -> d.dismiss());
+        // 弹窗占较大比例屏幕，确保雷达与底部按钮都完整可见（避免“停止定位”被挤出/按不到）
+        try {
+            android.view.Display disp = getWindowManager().getDefaultDisplay();
+            android.graphics.Point psz = new android.graphics.Point();
+            disp.getSize(psz);
+            d.getWindow().setLayout((int)(psz.x * 0.94), (int)(psz.y * 0.88));
+        } catch (Exception ignore) {}
 
         // 单次开启连续盘点，回调里【只】更新 lastRssi / lastSeen 时间戳（绝不触碰电源、不切电、不调 stopInventory）；
         // 由 UI Handler 驱动重绘：距上次读到 < 2000ms 就显示 lastRssi（红点稳定停留），
