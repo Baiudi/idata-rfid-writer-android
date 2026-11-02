@@ -147,6 +147,7 @@ public class IdataUhfAdapter implements RfidSdk {
                 mBindPath = "UHFInterface";
                 Log.i(TAG, "ensureSdk: 路径1 通过 UHFInterface 获取活实例，rawManager=" + (mRawManager != null));
                 logManagerMethods();
+                logIfaceMethods();
                 return;
             } catch (Throwable e) {
                 Log.w(TAG, "ensureSdk: 路径1(UHFInterface) 失败，回退路径2", e);
@@ -664,6 +665,8 @@ public class IdataUhfAdapter implements RfidSdk {
             }
         }
         if (triedFiltered) {
+            // 厂商 UHFInterface 自带“写后读”方法（自带 SELECT，仅锁定 C1，最可靠），优先尝试
+            if (tryIfaceCombinedWrite(pwd, writeBank, startWord, dataHex, dataBytes, fBank, fStartBit, fLenBits, fData)) return true;
             // 过滤写方法存在但均返回失败：仅当业务层确认“范围内只有 C1 一张标签”时，
             // 才降级为不过滤写 / writeDataToEpc（写当前唯一应答的标签，即 C1），避免误写 C59A 等其它标签。
             if (mAllowUnfiltered) {
@@ -674,6 +677,7 @@ public class IdataUhfAdapter implements RfidSdk {
                 Log.w(TAG, "writeViaManager: 过滤写均失败，且未授权不过滤写（防误写其它标签），放弃");
             }
             logManagerMethods();
+            logIfaceMethods();
             return false;
         }
 
@@ -807,6 +811,64 @@ public class IdataUhfAdapter implements RfidSdk {
                 sb.append("\n  ").append(m.toString());
         }
         Log.i(TAG, sb.toString());
+    }
+
+    /** 诊断：列出 UHFInterface（dex 封装层）上的 write/select/read 方法，便于确认厂商自带写方法签名 */
+    private void logIfaceMethods() {
+        if (mIface == null) { Log.w(TAG, "logIfaceMethods: 无 UHFInterface 实例"); return; }
+        Class<?> c = mIface.getClass();
+        StringBuilder sb = new StringBuilder("UHFInterface(").append(c.getName()).append(") 方法: ");
+        for (Method m : c.getMethods()) {
+            String n = m.getName().toLowerCase();
+            if (n.contains("write") || n.contains("read") || n.contains("select")
+                    || n.contains("connect") || n.contains("power") || n.contains("inventory"))
+                sb.append("\n  ").append(m.toString());
+        }
+        Log.i(TAG, sb.toString());
+    }
+
+    /**
+     * 尝试调用厂商 UHFInterface 自带的“写后读”组合方法 WriteTagDataAndReadTagData。
+     * 该方法在 dex 封装层内部完成 SELECT + 写 + 读回，比直接驱动固件 UHFManager.writeTag 更可靠；
+     * 它自带过滤参数，只会命中 C1（EPC 精确匹配），不会误写其它标签。
+     * 由于其签名未知，逐候选尝试多种参数组合（字数/字节数 cnt、hex/byte 数据）。
+     */
+    private boolean tryIfaceCombinedWrite(String pwd, int writeBank, int startWord,
+                                         String dataHex, byte[] dataBytes,
+                                         int fBank, int fStartBit, int fLenBits, String fData) {
+        if (mIface == null) { Log.w(TAG, "writeViaManager: 无 UHFInterface，跳过 WriteTagDataAndReadTagData"); return false; }
+        Class<?> ic = mIface.getClass();
+        int wordLen = (dataBytes.length + 1) / 2;
+        int byteLen = dataBytes.length;
+        // 候选签名：以固件 writeTag 9 参为蓝本，返值可能是 String(读回数据) 或 boolean
+        Object[][][] cands = new Object[][][]{
+                {{"WriteTagDataAndReadTagData", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
+                {{"WriteTagDataAndReadTagData", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fBank, fStartBit, fLenBits, fData}},
+                {{"WriteTagDataAndReadTagData", String.class, int.class, int.class, byte[].class, int.class, int.class, int.class, byte[].class},
+                        new Object[]{pwd, writeBank, startWord, dataBytes, fBank, fStartBit, fLenBits, hexToBytes(fData)}},
+        };
+        for (Object[][] c : cands) {
+            String name = (String) c[0][0];
+            Class<?>[] types = new Class<?>[c[0].length - 1];
+            for (int i = 1; i < c[0].length; i++) types[i - 1] = (Class<?>) c[0][i];
+            Object[] args = (Object[]) c[1];
+            try {
+                Method m = ic.getMethod(name, types);
+                Log.i(TAG, "writeViaManager: 尝试 " + name + "(UHFInterface) 参=" + java.util.Arrays.toString(args));
+                Object r = m.invoke(mIface, args);
+                boolean ok = interpretWriteReturn(r);
+                Log.i(TAG, "writeViaManager: " + name + "(UHFInterface) 返回=" + r + " -> ok=" + ok);
+                if (ok) return true;
+                Log.w(TAG, "writeViaManager: " + name + "(UHFInterface) 未指示成功，继续候选");
+            } catch (NoSuchMethodException e) {
+                Log.d(TAG, "writeViaManager: UHFInterface 无 " + name + "(" + types.length + "参) 方法，跳过");
+            } catch (Throwable e) {
+                Log.w(TAG, "writeViaManager: " + name + "(UHFInterface) 异常", e);
+            }
+        }
+        return false;
     }
 
     @Override
