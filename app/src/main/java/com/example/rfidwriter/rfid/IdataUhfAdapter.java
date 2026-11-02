@@ -89,6 +89,8 @@ public class IdataUhfAdapter implements RfidSdk {
     private InventoryCallback mInvCb;
 
     private final AtomicBoolean mConnected = new AtomicBoolean(false);
+    /** 仅在“探测确认范围内只有 C1 一张标签”时，才允许过滤写全部失败后降级为不过滤写（防误写其它标签） */
+    private volatile boolean mAllowUnfiltered = false;
     private final AtomicBoolean mPolling = new AtomicBoolean(false);
     private final Handler mMain = new Handler(Looper.getMainLooper());
     private String mBindPath = "none";             // 诊断：实际用了哪条绑定路径
@@ -612,20 +614,22 @@ public class IdataUhfAdapter implements RfidSdk {
         int wordLen = (dataBytes.length + 1) / 2;   // 字数 = (字节数+1)/2（iData 多数固件 writeTag 的 cnt 为字数）
         int byteLen = dataBytes.length;             // 少数固件把 cnt 当作字节数，作为备选
         String fPrefix = (fData != null && fData.length() >= 8) ? fData.substring(0, 8) : fData; // 32bit 掩码用 EPC 前 8hex
+        String fPrefix16 = (fData != null && fData.length() >= 16) ? fData.substring(0, 16) : fPrefix; // 64bit 掩码
+        String fPrefix20 = (fData != null && fData.length() >= 20) ? fData.substring(0, 20) : fPrefix16; // 80bit 掩码
 
         // ---- 第一组：带过滤写（最安全，只写匹配标签）----
         // 设备实测 UHFManager 真实签名（来自 introspection 日志）：
         //   boolean writeTag(String pwd, int bank, int ptr, int cnt, String dataHex,
         //                    int fBank, int fStartBit, int fLenBits, String filterEpc)
-        // 最后 4 个参数为 SELECT 过滤条件。本设备单读/单写“带过滤”此前返回空/失败，故逐一尝试多种掩码：
-        //   A/B：32bit 前缀掩码(E2801191)，规避固件对 96bit 全掩码的限制；cnt 分别取字数/字节数
-        //   C  ：完整 EPC 96bit 掩码（部分固件写路径支持、读路径不支持）
-        //   D/E：旧 SDK 的 writeTagWithFilter 字符串/字节变体（兜底）
+        // 最后 4 个参数为 SELECT 过滤条件。本设备单读/单写“带过滤”此前返回空/失败，故逐一尝试多种掩码长度，
+        // 以适配固件对掩码位数(32/64/80/96)的接受上限；cnt 取字数(主流)。
         Object[][][] filtered = new Object[][][]{
                 {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
                         new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 32, fPrefix}},
                 {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fBank, fStartBit, 32, fPrefix}},
+                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 64, fPrefix16}},
+                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 80, fPrefix20}},
                 {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
                         new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
                 {{"writeTagWithFilter", int.class, int.class, int.class, String.class, int.class, int.class, String.class, String.class},
@@ -655,8 +659,14 @@ public class IdataUhfAdapter implements RfidSdk {
             }
         }
         if (triedFiltered) {
-            // 过滤写方法存在但失败 -> 不降级到普通写（避免误写其它标签）
-            Log.w(TAG, "writeViaManager: 过滤写方法存在但返回失败，不再降级普通写（防误写）");
+            // 过滤写方法存在但均返回失败：仅当业务层确认“范围内只有 C1 一张标签”时，
+            // 才降级为不过滤写（写当前唯一应答的标签，即 C1），避免误写 C59A 等其它标签。
+            if (mAllowUnfiltered) {
+                Log.w(TAG, "writeViaManager: 过滤写均失败，按允许降级为不过滤写（仅 C1 在场时安全）");
+                if (tryUnfilteredWrite(mc, pwd, writeBank, startWord, wordLen, dataHex)) return true;
+            } else {
+                Log.w(TAG, "writeViaManager: 过滤写均失败，且未授权不过滤写（防误写其它标签），放弃");
+            }
             logManagerMethods();
             return false;
         }
@@ -693,6 +703,31 @@ public class IdataUhfAdapter implements RfidSdk {
         Log.e(TAG, "writeViaManager: 未找到任何可用的写方法（已列出管理器 write 方法供诊断）");
         logManagerMethods();
         return false;
+    }
+
+    /** 业务层在探测确认“范围内只有目标一张标签”时调用，允许过滤写全部失败后降级为不过滤写 */
+    public void setAllowUnfilteredWrite(boolean v) { mAllowUnfiltered = v; }
+
+    /** 不过滤写：filterEpc 留空，写当前天线范围内唯一应答的标签（仅在 mAllowUnfiltered 时由 writeViaManager 调用） */
+    private boolean tryUnfilteredWrite(Class<?> mc, String pwd, int writeBank, int startWord,
+                                       int wordLen, String dataHex) {
+        try {
+            Method m = mc.getMethod("writeTag",
+                    String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class);
+            Object r = m.invoke(mgrOf(m), pwd, writeBank, startWord, wordLen, dataHex, 0, 0, 0, "");
+            boolean ok = interpretWriteReturn(r);
+            Log.i(TAG, "writeViaManager: 不过滤写 writeTag 返回=" + r + " -> ok=" + ok);
+            return ok;
+        } catch (Throwable e) {
+            Log.w(TAG, "writeViaManager: 不过滤写异常", e);
+            return false;
+        }
+    }
+
+    /** 取得当前用于写操作的管理器实例（与 writeViaManager 一致） */
+    private Object mgrOf(Class<?> mc) {
+        Object mgr = (mRawManager != null) ? mRawManager : mUhf;
+        return mgr;
     }
 
     /** 解释写方法返回值：boolean 直接判；int 判 >=0；Bundle 看 result/data；String 看非空且非 "0"/"false" */

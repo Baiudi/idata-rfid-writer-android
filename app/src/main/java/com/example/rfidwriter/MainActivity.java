@@ -115,6 +115,7 @@ public class MainActivity extends AppCompatActivity {
     private Map<String, String> lastReadInfo;   // 读取标签页：最近一次读取结果（供导出）
     private TagInfo lastDetectedTag;
     private String detectFailReason = "";   // detectSingleTag 返回 null 时的原因，供 UI 展示
+    private boolean mC1Only = false;        // detectTargetC1 探测窗口内是否只有 C1 一张标签（用于允许不过滤写兜底）
 
     private volatile boolean writing = false;
     private volatile boolean inventorying = false;
@@ -1006,6 +1007,8 @@ public class MainActivity extends AppCompatActivity {
                     + "为避免误写其它标签，请只把 C1 放到天线附近、移开其余方位标签";
             return null;
         }
+        // 仅当窗口内“只有 C1 一张”时才允许后续不过滤写兜底（C59A 等非方位标签也会使该标志为 false）
+        mC1Only = (seen.size() == 1);
         TagInfo r = new TagInfo();
         r.epc = TARGET_EPC;
         return r;
@@ -1104,6 +1107,8 @@ public class MainActivity extends AppCompatActivity {
                     int fStartBit = A1_FILTER_START_BIT;    // 32 = 跳过 CRC/PC
                     int fLenBits = TARGET_EPC.length() * 4; // 96 bit = 完整 EPC
                     String fData = TARGET_EPC;
+                    // 仅当探测窗口内确实只有 C1 一张标签时，才允许“过滤写全失败”后降级为不过滤写（避免误写 C59A）
+                    if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setAllowUnfilteredWrite(mC1Only);
                     // 写入 USER 区（bank3, word0），内容 "R2|PC00001"
                     boolean ok = sdk.writeTagWithFilterSync(
                             fBank, fStartBit, fLenBits, fData,
