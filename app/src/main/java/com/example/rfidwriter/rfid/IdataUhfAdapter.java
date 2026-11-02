@@ -13,6 +13,7 @@ import java.io.OutputStream;
 import java.lang.reflect.Constructor;
 import java.lang.reflect.Field;
 import java.lang.reflect.InvocationHandler;
+import java.lang.reflect.InvocationTargetException;
 import java.lang.reflect.Method;
 import java.lang.reflect.Proxy;
 import java.nio.charset.StandardCharsets;
@@ -636,7 +637,7 @@ public class IdataUhfAdapter implements RfidSdk {
         probeWriteMode();
         if (tryIfaceWrites(pwd, writeBank, startWord, dataHex, dataBytes, fBank, fStartBit, fLenBits, fData, mAllowUnfiltered)) return true;
         // 方案 2：先 filterSet(SELECT) 再写（对齐参考 App controlRFIDInventory：filterSet -> 写/读 复用已设 SELECT）
-        if (tryFilterSetThenWrite(pwd, writeBank, startWord, dataHex, wordLen, byteLen, fBank, fData)) return true;
+        if (tryFilterSetThenWrite(pwd, writeBank, startWord, dataHex, wordLen, byteLen, fBank, fData, fStartBit, fLenBits)) return true;
 
         // ---- 第一组：带过滤写（最安全，只写匹配标签）----
         // 设备实测 UHFManager 真实签名：writeTag(String pwd,int bank,int ptr,int cnt,String dataHex,
@@ -915,7 +916,8 @@ public class IdataUhfAdapter implements RfidSdk {
      * UHFInterface.writeTag（空过滤，依赖已设 SELECT）写入，命中任一即成功。只锁定 C1，不会误写其它标签。
      */
     private boolean tryFilterSetThenWrite(String pwd, int writeBank, int startWord, String dataHex,
-                                         int wordLen, int byteLen, int fBank, String fData) {
+                                         int wordLen, int byteLen, int fBank, String fData,
+                                         int fStartBit, int fLenBits) {
         if (mIface == null) { Log.w(TAG, "tryFilterSetThenWrite: 无 UHFInterface，跳过"); return false; }
         Class<?> ic = mIface.getClass();
         Method filterSet;
