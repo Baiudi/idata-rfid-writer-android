@@ -68,6 +68,9 @@ public class MainActivity extends AppCompatActivity {
     private static final long INVENTORY_WINDOW_MS = 3000;  // 单标签检测窗口（拉长，确保首张标签稳定出现）
     private static final long WRITE_TIMEOUT_MS = 5000;
     private static final long READ_TIMEOUT_MS = 3000;
+    // 后台单读 TID/USER 的短超时：仅作“尽量补全”，不阻塞资产号即时显示；本设备单读通道慢/可能不可用
+    private static final long SINGLE_READ_TIMEOUT_MS = 1500;
+    private int readSeq = 0;                                 // 每次读取的序号，用于丢弃过期的后台单读结果
     private static final int ASSET_BANK = 1;               // 资产编号固定写入 EPC 区
     private static final int ASSET_START = 2;              // EPC 区前 2 字为 CRC/PC
     private static final String INFO_MAGIC = "R2";         // USER 区结构化信息前缀（v2：八个自定义字段）
@@ -1046,6 +1049,7 @@ public class MainActivity extends AppCompatActivity {
         reading = true;
         setStatus("正在读取标签…");
         sdk.setPower(getParam("power", 30));
+        final int mySeq = ++readSeq;               // 本次读取序号，后台单读结果需与最新一次匹配
         new Thread(() -> {
             try {
                 TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
@@ -1061,25 +1065,9 @@ public class MainActivity extends AppCompatActivity {
                     });
                     return;
                 }
-                // 用检测到的标签构造过滤条件，锁定只读取这一张，避免多标签时误读其他标签
-                String[] f = buildFilter(tag);
-                int fBank = Integer.parseInt(f[0]);
-                int fStartBit = Integer.parseInt(f[1]);
-                int fLenBits = Integer.parseInt(f[2]);
-                String fData = f[3];
-                String tid = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
-                String epc = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
-                String user = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
-                String userUtf8 = user != null ? FormatUtil.hexToUtf8(user) : "";
-                lastReadInfo = new java.util.HashMap<>();
-                lastReadInfo.put("epc", nz(tag.epc));
-                lastReadInfo.put("tid", nz(tid));
-                lastReadInfo.put("userHex", nz(user));
-                lastReadInfo.put("userUtf8", nz(userUtf8));
-                lastReadInfo.put("readAt", nowIso());
+                // ===== 即时显示：仅用盘点回传的 tag.epc 即可补全资产号，不等待任何单读 =====
                 String epcHex = nz(tag.epc);
                 String epcAscii = epcHex.length() >= 2 ? FormatUtil.hexToAscii(epcHex) : "";
-                String epcNote = epcHex.length() <= 8 ? "  （仅前" + (epcHex.length() / 2) + "字节，盘点未回传完整EPC）" : "";
                 String fullEpc = matchRecordedFullEpc(epcHex);
                 String recAsset = getRecordedAsset();
                 boolean showFull = fullEpc != null && !fullEpc.equalsIgnoreCase(epcAscii);
@@ -1087,40 +1075,76 @@ public class MainActivity extends AppCompatActivity {
                         + " recordedFull=" + (fullEpc != null ? fullEpc : "<none>")
                         + " recordedAsset=" + recAsset + " showFull=" + showFull
                         + " invEpcAtWrite=" + prefs.getString("lastWrittenInvEpc", ""));
+                String fullEpcNote = showFull
+                        ? "\n完整EPC(本机写入记录补全): " + fullEpc
+                          + (recAsset.isEmpty() ? "" : "  资产编号:" + recAsset)
+                          + "\n  ↳ 盘点仅回传前缀 " + epcHex + "，据本机写入记录补全；请用专用读卡器复核"
+                        : "";
                 StringBuilder disp = new StringBuilder();
                 disp.append("EPC  : ").append(epcHex)
-                        .append(epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")").append(epcNote);
+                        .append(epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")");
                 if (showFull) {
                     disp.append("\n完整EPC(本机写入记录补全): ").append(fullEpc);
                     if (!recAsset.isEmpty()) disp.append("   资产编号: ").append(recAsset);
                     disp.append("\n  ↳ 盘点仅回传前缀 ").append(epcHex)
                             .append("，完整值据本机写入记录补全；请用专用读卡器复核");
                 }
-                disp.append("\nTID  : ").append(nz(tid))
-                        .append("\nUSER : ").append(nz(user));
-                if (!userUtf8.isEmpty()) disp.append("\nUSER(解析): ").append(userUtf8);
-                String fullEpcNote = showFull
-                        ? "\n完整EPC(本机写入记录补全): " + fullEpc
-                          + (recAsset.isEmpty() ? "" : "  资产编号:" + recAsset)
-                          + "\n  ↳ 盘点仅回传前缀 " + epcHex + "，据本机写入记录补全；请用专用读卡器复核"
-                        : "";
+                disp.append("\nTID  : （单读中…）\nUSER : （单读中…）");
+                final String epcHexF = epcHex, epcAsciiF = epcAscii, fullEpcF = fullEpc, recAssetF = recAsset;
+                final boolean showFullF = showFull;
                 runOnUiThread(() -> {
                     if (tvDetected != null)
-                        tvDetected.setText("检测到的标签：EPC=" + epcHex
-                                + (epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")")
+                        tvDetected.setText("检测到的标签：EPC=" + epcHexF
+                                + (epcAsciiF.isEmpty() ? "" : "  (" + epcAsciiF + ")")
                                 + fullEpcNote
-                                + (nz(tid).isEmpty() ? "" : "  TID=" + tid)
                                 + (detectFailReason.isEmpty() ? "" : "\n(" + detectFailReason + ")"));
                     if (tvReadData != null) tvReadData.setText(disp.toString());
-                    if (tvEpc != null) tvEpc.setText(showFull
-                            ? fullEpc + "\n(盘点回传: " + epcHex + " " + epcAscii + ")"
-                            : epcHex + (epcAscii.isEmpty() ? "" : "\n(" + epcAscii + ")"));
-                    if (tvTid != null) tvTid.setText(nz(tid));
-                    if (tvUser != null) tvUser.setText(nz(user) + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8));
-                    setStatus("读取完成（TID/EPC/USER 已读，可点「导出读取数据」）");
+                    if (tvEpc != null) tvEpc.setText(showFullF
+                            ? fullEpcF + "\n(盘点回传: " + epcHexF + " " + epcAsciiF + ")"
+                            : epcHexF + (epcAsciiF.isEmpty() ? "" : "\n(" + epcAsciiF + ")"));
+                    if (tvTid != null) tvTid.setText("（单读中…）");
+                    if (tvUser != null) tvUser.setText("（单读中…）");
+                    setStatus("已读取（资产号据本机记录即时补全；后台单读 TID/USER 中…）");
                 });
-            } finally {
-                reading = false;
+                // ===== 后台单读 TID/USER：用短超时，不阻塞上面的即时显示 =====
+                new Thread(() -> {
+                    try {
+                        String[] f = buildFilter(tag);
+                        int fBank = Integer.parseInt(f[0]);
+                        int fStartBit = Integer.parseInt(f[1]);
+                        int fLenBits = Integer.parseInt(f[2]);
+                        String fData = f[3];
+                        String tid = sdk.readTagSync(2, 0, 6, PWD, SINGLE_READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
+                        String user = sdk.readTagSync(3, 0, 16, PWD, SINGLE_READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
+                        String userUtf8 = user != null ? FormatUtil.hexToUtf8(user) : "";
+                        lastReadInfo = new java.util.HashMap<>();
+                        lastReadInfo.put("epc", epcHexF);
+                        lastReadInfo.put("tid", nz(tid));
+                        lastReadInfo.put("userHex", nz(user));
+                        lastReadInfo.put("userUtf8", nz(userUtf8));
+                        lastReadInfo.put("readAt", nowIso());
+                        if (mySeq != readSeq) return;   // 已有更新的读取，丢弃本次过期结果
+                        final String tidF = nz(tid), userF = nz(user), userUtf8F = userUtf8;
+                        runOnUiThread(() -> {
+                            if (tvTid != null) tvTid.setText(tidF.isEmpty() ? "（单读不可用，请用专用读卡器）" : tidF);
+                            if (tvUser != null) tvUser.setText(userF.isEmpty() ? "（单读不可用，请用专用读卡器）" : userF + (userUtf8F.isEmpty() ? "" : "\nUSER(解析): " + userUtf8F));
+                            if (tvReadData != null) {
+                                String cur = tvReadData.getText() != null ? tvReadData.getText().toString() : "";
+                                cur = cur.replace("TID  : （单读中…）", "TID  : " + tidF)
+                                         .replace("USER : （单读中…）", "USER : " + userF + (userUtf8F.isEmpty() ? "" : "\nUSER(解析): " + userUtf8F));
+                                tvReadData.setText(cur);
+                            }
+                            setStatus("读取完成（资产号已据本机记录补全"
+                                    + (tidF.isEmpty() && userF.isEmpty() ? "；TID/USER 单读不可用，请用专用读卡器" : "；TID/USER 已读")
+                                    + "）");
+                        });
+                    } finally {
+                        if (mySeq == readSeq) reading = false;   // 仅当仍是本次读取时解锁
+                    }
+                }).start();
+            } catch (Exception e) {
+                Log.e(TAG, "readFullTag err", e);
+                if (mySeq == readSeq) reading = false;
             }
         }).start();
     }
