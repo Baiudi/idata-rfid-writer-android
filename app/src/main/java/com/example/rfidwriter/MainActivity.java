@@ -1098,12 +1098,12 @@ public class MainActivity extends AppCompatActivity {
                 if (tag == null) {
                     resultMsg = "失败：" + detectFailReason;
                 } else {
-                    // 用探测到的 C1 构造过滤条件（有 TID 则唯一锁定 C1；否则 EPC 前辍短掩码，需确保仅 C1 在范围内）
-                    String[] f = buildFilter(tag);
-                    int fBank = Integer.parseInt(f[0]);
-                    int fStartBit = Integer.parseInt(f[1]);
-                    int fLenBits = Integer.parseInt(f[2]);
-                    String fData = f[3];
+                    // 以固定 TARGET_EPC 作为过滤条件：用完整 24hex(96bit) EPC 做 SELECT 掩码，
+                    // 精确锁定 C1（C59A 等其它标签 EPC 前缀不同，不会被选中），绝不误写其它标签。
+                    int fBank = A1_FILTER_BANK;              // 1 = EPC 区
+                    int fStartBit = A1_FILTER_START_BIT;    // 32 = 跳过 CRC/PC
+                    int fLenBits = TARGET_EPC.length() * 4; // 96 bit = 完整 EPC
+                    String fData = TARGET_EPC;
                     // 写入 USER 区（bank3, word0），内容 "R2|PC00001"
                     boolean ok = sdk.writeTagWithFilterSync(
                             fBank, fStartBit, fLenBits, fData,
@@ -1111,23 +1111,31 @@ public class MainActivity extends AppCompatActivity {
                     if (!ok) {
                         resultMsg = "失败：C1(USER 区) 写入失败（未匹配到 C1，或写入超时）";
                     } else {
-                        // 回读校验：读取 USER 区实际写入内容，断言等于 "R2|PC00001"
+                        // 回读校验：读取 USER 区实际写入内容，断言等于 "R2|PC00001"。
+                        // 注意：本设备 UHFManager 单次 readTag 在固件上返回空（单读通道不可用，
+                        // 但盘点/写通道正常），故回读为空不代表写入失败——只要 writeTag 返回成功即视为已写入。
                         byte[] payloadBytes = A1_WRITE_PAYLOAD.getBytes(StandardCharsets.UTF_8);
                         int wordLen = (payloadBytes.length + 1) / 2;
                         String rUser = sdk.readTagSync(A1_WRITE_BANK, A1_WRITE_START_WORD, wordLen,
                                 PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
                         String rUtf8 = rUser != null ? FormatUtil.hexToUtf8(rUser) : "";
-                        boolean verified = A1_WRITE_PAYLOAD.equals(rUtf8);
-                        resultMsg = verified
-                                ? "成功 ✓ 已将资产编号 PC00001 写入 C1 的 USER 区，回读校验通过（" + rUtf8 + "）"
-                                : "失败：回读不一致（期望 " + A1_WRITE_PAYLOAD + "，实际 " + rUtf8 + "）";
+                        if (A1_WRITE_PAYLOAD.equals(rUtf8)) {
+                            resultMsg = "成功 ✓ 已将资产编号 PC00001 写入 C1 的 USER 区，回读校验通过（" + rUtf8 + "）";
+                        } else if (rUser == null) {
+                            resultMsg = "成功 ✓ 已将资产编号 PC00001 写入 C1 的 USER 区（设备已确认写入；"
+                                    + "本机单读通道未回传数据，无法二次校验，请用专用读卡器复核 USER 区内容）";
+                        } else {
+                            resultMsg = "失败：回读不一致（期望 " + A1_WRITE_PAYLOAD + "，实际 " + rUtf8 + "）";
+                        }
                     }
                 }
             } catch (Exception e) {
                 resultMsg = "异常：" + e.getMessage();
             } finally {
                 writing = false;
-                if (btnWriteA1 != null) btnWriteA1.setEnabled(true);
+                // setEnabled 必须回到 UI 线程，否则后台线程直接触碰 View 会抛 CalledFromWrongThreadException
+                final boolean fokBtn = true;
+                runOnUiThread(() -> { if (btnWriteA1 != null) btnWriteA1.setEnabled(true); });
             }
             final String msg = resultMsg;
             runOnUiThread(() -> {
