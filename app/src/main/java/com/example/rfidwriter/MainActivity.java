@@ -1249,6 +1249,12 @@ public class MainActivity extends AppCompatActivity {
                             fBank, fStartBit, fLenBits, fData,
                             ASSET_BANK, ASSET_START, asset, PWD, WRITE_TIMEOUT_MS);
                     if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setAllowUnfilteredWrite(false);
+                    // 回退：直驱 manager 级 writeDataToEpc（遍历 {3,0}/{1,2}/... 等参数组合，其中 {3,0} 为本设备唯一一次成功的实参），
+                    // 用于覆盖「标准带过滤写因设备回报 EPC 与芯片实际 EPC 不一致而 SELECT 匹配不上」的情况。
+                    if (!ok && sdk instanceof IdataUhfAdapter) {
+                        Log.i(TAG, "EPC_WRITE: 标准写未成功，回退 writeEpcRaw(bank/ptr 组合遍历)");
+                        ok = ((IdataUhfAdapter) sdk).writeEpcRaw(PWD, FormatUtil.asciiToHex(asset));
+                    }
                     if (!ok) {
                         resultMsg = "失败：EPC(资产编号)写入失败（标签可能已锁定、或不在天线范围内）";
                     } else {

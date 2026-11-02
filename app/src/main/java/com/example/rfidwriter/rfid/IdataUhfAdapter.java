@@ -734,7 +734,9 @@ public class IdataUhfAdapter implements RfidSdk {
         if (!mConnected.get()) return false;
         Object iface = mIface;
         Object raw = (mRawManager != null) ? mRawManager : mUhf;
-        int[][] argSets = { {1, 0}, {0, 0}, {0, 1}, {1, 1}, {0, 6}, {0, 12} };
+        // 注：本设备唯一一次 EPC 写成功发生在 tryWriteDataToEpc 以实参 (pwd, 3, 0, dataHex) 调用固件 UHFManager.writeDataToEpc 时，
+        // 故把 {3,0} 放在最前优先尝试；其余为常见 bank/ptr 组合兜底。
+        int[][] argSets = { {3, 0}, {3, 2}, {1, 2}, {1, 0}, {0, 0}, {0, 1}, {0, 6}, {0, 12} };
         for (Object obj : new Object[]{iface, raw}) {
             if (obj == null) continue;
             Class<?> c = obj.getClass();
