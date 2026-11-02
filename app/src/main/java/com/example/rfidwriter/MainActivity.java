@@ -1241,9 +1241,14 @@ public class MainActivity extends AppCompatActivity {
                     int fBank = Integer.parseInt(f[0]), fStartBit = Integer.parseInt(f[1]), fLenBits = Integer.parseInt(f[2]);
                     String fData = f[3];
                     Log.i(TAG, "EPC_WRITE: 开始把资产编号 " + asset + " 写入 EPC 区(bank1,word2) fData=" + fData);
+                    // 本设备固件经实测【仅 manager 级 writeDataToEpc（作用于最近盘点到的标签）可成功写 EPC】，
+                    // 而该路径仅在“范围内仅一张标签”授权后才会被走到。detectSingleTag 已确认单标签，
+                    // 故在此授权不过滤写兜底；tryWriteDataToEpc 内部有「仅当 writeBank==1」护栏，绝不会误伤 USER 区。
+                    if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setAllowUnfilteredWrite(true);
                     boolean ok = sdk.writeTagWithFilterSync(
                             fBank, fStartBit, fLenBits, fData,
                             ASSET_BANK, ASSET_START, asset, PWD, WRITE_TIMEOUT_MS);
+                    if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setAllowUnfilteredWrite(false);
                     if (!ok) {
                         resultMsg = "失败：EPC(资产编号)写入失败（标签可能已锁定、或不在天线范围内）";
                     } else {
