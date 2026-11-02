@@ -1161,6 +1161,7 @@ public class MainActivity extends AppCompatActivity {
                         : "";
                 // 本机写入记录里的结构化信息（存放位置/部门/使用人…）；仅当本次读到的标签匹配到本机写入记录时才补全
                 String infoBlock = showFull ? getRecordedInfoBlock() : "";
+                Log.i(TAG, "READ_UI_INFO: showFull=" + showFull + " infoBlock=" + (infoBlock.isEmpty() ? "<none>" : infoBlock.replace("\n", " | ")));
                 StringBuilder disp = new StringBuilder();
                 disp.append("EPC  : ").append(epcHex)
                         .append(epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")");
