@@ -492,11 +492,11 @@ public class IdataUhfAdapter implements RfidSdk {
             String data = null;
             String msg = "";
             try {
-                // iUHF 的 readTag(pwd, bank, ptr, cnt, filterEpc, fBank, fPtr, fCnt)
-                // 单张读取不设置过滤（fBank=0,fPtr=0,fCnt=0），由模块自动选到天线范围内唯一标签。
+                // iUHF 的 readTag(pwd, fBank, fStartBit, fLenBits, filterEpc, readBank, readPtr, readLen)（过滤参数在前）
+                // 单张读取不设置过滤（fBank=0,fStartBit=0,fLenBits=0），由模块自动选到天线范围内唯一标签。
                 Object r = callIface("readTag",
-                                pwd == null ? "" : pwd, bank, wordAddr, wordLen,
-                                "", 0, 0, 0);
+                                pwd == null ? "" : pwd, 0, 0, 0, "",
+                                bank, wordAddr, wordLen);
                 if (r instanceof String && !((String) r).isEmpty()) {
                     data = (String) r;
                     ok = true;
@@ -527,9 +527,9 @@ public class IdataUhfAdapter implements RfidSdk {
             String data = null;
             String msg = "";
             try {
-                // iUHF 的 readTag(pwd, bank, ptr, cnt, filterEpc, fBank, fPtr, fCnt)
+                // iUHF 的 readTag(pwd, fBank, fStartBit, fLenBits, filterEpc, readBank, readPtr, readLen)（过滤参数在前）
                 // 带过滤：仅对匹配 filterEpc 的那张标签读取，杜绝多标签时误读其他标签。
-                // 参考 writeWholeEpc 用 fStartBit=1 的线索，过滤偏移很可能以“字”为单位，故遍历多种约定。
+                // 过滤偏移/长度以“位(bit)”为单位（EPC 过滤=32/96），写偏移/长度以“字(word)”为单位；遍历多种约定以兼容固件。
                 int[][] convs = new int[][]{
                         {fStartBit, fLenBits},  // 业务层传入（默认 32/96，bit 单位）
                         {2, 6},                 // word 单位：EPC 数据位于 word2、占 6 字
@@ -540,7 +540,7 @@ public class IdataUhfAdapter implements RfidSdk {
                 for (int[] conv : convs) {
                     int sb = conv[0], lb = conv[1];
                     Object r = callIface("readTag",
-                            pwd == null ? "" : pwd, bank, wordAddr, wordLen, epc, fBank, sb, lb);
+                            pwd == null ? "" : pwd, fBank, sb, lb, epc, bank, wordAddr, wordLen);
                     if (r instanceof String && !((String) r).isEmpty()) {
                         data = (String) r;
                         ok = true;
@@ -554,7 +554,7 @@ public class IdataUhfAdapter implements RfidSdk {
                     // 所有过滤约定都读空：退化为不过滤单读（业务层已用 detectTargetC1 保证范围内仅目标标签）
                     Log.w(TAG, "readTag(所有过滤约定均空)，退化尝试不过滤单读 bank=" + bank);
                     Object r2 = callIface("readTag",
-                            pwd == null ? "" : pwd, bank, wordAddr, wordLen, "", 0, 0, 0);
+                            pwd == null ? "" : pwd, 0, 0, 0, "", bank, wordAddr, wordLen);
                     if (r2 instanceof String && !((String) r2).isEmpty()) {
                         data = (String) r2;
                         ok = true;
@@ -640,11 +640,13 @@ public class IdataUhfAdapter implements RfidSdk {
         if (tryFilterSetThenWrite(pwd, writeBank, startWord, dataHex, wordLen, byteLen, fBank, fData, fStartBit, fLenBits)) return true;
 
         // ---- 第一组：带过滤写（最安全，只写匹配标签）----
-        // 设备实测 UHFManager 真实签名：writeTag(String pwd,int bank,int ptr,int cnt,String dataHex,
-        //              int fBank,int fStartBit,int fLenBits,String filterEpc)
-        // 最后 4 个参数为 SELECT 过滤条件。参考 iUHF 源码 writeWholeEpc 用 fStartBit=1、fLenBits=字数(含 PC)，
-        // 强烈提示本固件过滤偏移以“字(word)”而非“位(bit)”为单位。故同时尝试 bit 单位(32/96) 与 word 单位(2/6) 等多种约定，
-        // cnt 同时取字数(wordLen)与字节数(byteLen)。命中任一即视为写入成功。
+        // 真实固件/SDK 签名（已通过反编译 iUHF 的 writeWholeEpc 确认）：
+        //   writeTag(String pwd, int fBank, int fStartBit, int fLenBits, String fData,
+        //            int writeBank, int writeStart, int writeLen, String dataHex)
+        // 即【过滤参数在前，写参数在后】。参考 App 的 WriteFragment 正是此顺序调用且写成功。
+        // 注意：过滤偏移/长度(fStartBit/fLenBits)以“位(bit)”为单位（EPC 过滤=32/96），
+        // 写偏移/长度(writeStart/writeLen)以“字(word)”为单位。故同时遍历 bit(32/96) 与 word(2/6) 约定，
+        // 写长度同时取字数(wordLen)与字节数(byteLen)。命中任一即视为写入成功。
         boolean triedFiltered = false;
         int[][] convs = new int[][]{
                 {fStartBit, fLenBits},   // 业务层传入（默认 32/96，bit 单位）
@@ -661,7 +663,8 @@ public class IdataUhfAdapter implements RfidSdk {
                             String.class, int.class, int.class, int.class, String.class);
                     triedFiltered = true;
                     Log.i(TAG, "writeViaManager: 尝试 过滤写 writeTag conv(sb=" + sb + ",lb=" + lb + ") cnt=" + cnt);
-                    Object r = m.invoke(mgr, pwd, writeBank, startWord, cnt, dataHex, fBank, sb, lb, fData);
+                    // 真实顺序：writeTag(pwd, fBank,fStartBit,fLenBits,fData, writeBank,writeStart,writeLen,dataHex)
+                    Object r = m.invoke(mgr, pwd, fBank, sb, lb, fData, writeBank, startWord, cnt, dataHex);
                     boolean ok = interpretWriteReturn(r);
                     Log.i(TAG, "writeViaManager: 过滤写 conv(sb=" + sb + ",lb=" + lb + ") cnt=" + cnt + " 返回=" + r + " -> ok=" + ok);
                     if (ok) return true;
@@ -731,7 +734,8 @@ public class IdataUhfAdapter implements RfidSdk {
                 Method m = mc.getMethod("writeTag",
                         String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class);
                 Log.i(TAG, "writeViaManager: 尝试 不过滤写 writeTag cnt=" + cnt);
-                Object r = m.invoke(mgrOf(mc), pwd, writeBank, startWord, cnt, dataHex, 0, 0, 0, "");
+                // 真实顺序：writeTag(pwd, 0,0,0,"", writeBank,startWord,writeLen,dataHex)
+                Object r = m.invoke(mgrOf(mc), pwd, 0, 0, 0, "", writeBank, startWord, cnt, dataHex);
                 boolean ok = interpretWriteReturn(r);
                 Log.i(TAG, "writeViaManager: 不过滤写 writeTag(cnt=" + cnt + ") 返回=" + r + " -> ok=" + ok);
                 if (ok) return true;
@@ -863,21 +867,22 @@ public class IdataUhfAdapter implements RfidSdk {
         int byteLen = dataBytes.length;
         Object[][][] cands = new Object[][][]{
                 // 1) writeTag 9参（自带 SELECT 过滤，锁定 C1）
+                //    真实顺序：writeTag(pwd, fBank,fStartBit,fLenBits,fData, writeBank,writeStart,writeLen,dataHex)
                 {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
+                        new Object[]{pwd, fBank, fStartBit, fLenBits, fData, writeBank, startWord, wordLen, dataHex}},
                 {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fBank, fStartBit, fLenBits, fData}},
-                // 2) writeFullEpcTag 6参（pwd,bank,ptr,cnt,dataHex,filterEpc）自带过滤
+                        new Object[]{pwd, fBank, fStartBit, fLenBits, fData, writeBank, startWord, byteLen, dataHex}},
+                // 2) writeFullEpcTag 6参（pwd,fBank,fStartBit,fLenBits,fData,writeData）；注意它固定写 EPC bank，仅对合法 EPC 有效
                 {{"writeFullEpcTag", String.class, int.class, int.class, int.class, String.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fData}},
+                        new Object[]{pwd, fBank, fStartBit, fLenBits, fData, dataHex}},
                 {{"writeFullEpcTag", String.class, int.class, int.class, int.class, String.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fData}},
+                        new Object[]{pwd, fBank, fStartBit, fLenBits, fData, dataHex}},
                 // 3) writeDataToEpc（无过滤，仅允许 C1 单标签时调用）
                 {{"writeDataToEpc", String.class, int.class, int.class, String.class},
                         new Object[]{pwd, writeBank, startWord, dataHex}},
                 // 4) WriteTagDataAndReadTagData（自带 SELECT+写+读回；部分固件 UHFManager 无此方法会抛异常，忽略）
                 {{"WriteTagDataAndReadTagData", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
+                        new Object[]{pwd, fBank, fStartBit, fLenBits, fData, writeBank, startWord, wordLen, dataHex}},
         };
         for (Object[][] c : cands) {
             String name = (String) c[0][0];
@@ -938,7 +943,8 @@ public class IdataUhfAdapter implements RfidSdk {
                 for (int cnt : new int[]{wordLen, byteLen}) {
                     Method wt = ic.getMethod("writeTag", String.class, int.class, int.class, int.class,
                             String.class, int.class, int.class, int.class, String.class);
-                    Object r = wt.invoke(mIface, pwd, writeBank, startWord, cnt, dataHex, 0, 0, 0, "");
+                    // 真实顺序：writeTag(pwd, 0,0,0,"", writeBank,startWord,writeLen,dataHex)（空过滤、依赖已设 SELECT）
+                    Object r = wt.invoke(mIface, pwd, 0, 0, 0, "", writeBank, startWord, cnt, dataHex);
                     boolean ok = interpretWriteReturn(r);
                     Log.i(TAG, "tryFilterSetThenWrite: conv(sb=" + sb + ",lb=" + lb + ") cnt=" + cnt + " 写返回=" + r + " -> ok=" + ok);
                     if (ok) return true;
