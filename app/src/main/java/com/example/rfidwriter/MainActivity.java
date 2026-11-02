@@ -813,14 +813,21 @@ public class MainActivity extends AppCompatActivity {
         int fBank = Integer.parseInt(f[0]), fStartBit = Integer.parseInt(f[1]), fLenBits = Integer.parseInt(f[2]);
         String fData = f[3];
 
-        // 1) EPC 区：资产编号（ASCII）—— 本设备（iData T1U）UHF 固件唯一可写的存储区
-        boolean epcOk = sdk.writeTagWithFilterSync(
-                fBank, fStartBit, fLenBits, fData,
-                ASSET_BANK, ASSET_START, item.assetNo, PWD, WRITE_TIMEOUT_MS);
+        // 1) EPC 区：资产编号（ASCII）—— 本设备（iData T1U）UHF 固件唯一可写的存储区。
+        //    固件要求 EPC 写数据达到足够字长（实测 7 字节的 PC00001 被拒、14 字节可写），故尝试零补齐到 12/14/16 字节。
+        String[] epcCands = new String[]{ item.assetNo, epcPad(item.assetNo, 12), epcPad(item.assetNo, 14), epcPad(item.assetNo, 16) };
+        boolean epcOk = false;
+        String usedAsset = item.assetNo;
+        for (String cand : epcCands) {
+            epcOk = sdk.writeTagWithFilterSync(
+                    fBank, fStartBit, fLenBits, fData,
+                    ASSET_BANK, ASSET_START, cand, PWD, WRITE_TIMEOUT_MS);
+            if (epcOk) { usedAsset = cand; break; }
+        }
         if (!epcOk) { fail(item, "EPC(资产编号)写入失败"); return; }
-        int assetWordLen = (item.assetNo.length() + 1) / 2;
+        int assetWordLen = (usedAsset.length() + 1) / 2;
         String rEpc = sdk.readTagSync(ASSET_BANK, ASSET_START, assetWordLen, PWD, READ_TIMEOUT_MS);
-        boolean epcV = rEpc != null && FormatUtil.hexToAscii(rEpc).trim().equals(item.assetNo);
+        boolean epcV = rEpc != null && FormatUtil.hexToAscii(rEpc).trim().equals(usedAsset);
         if (rEpc == null) {
             // 本设备单次 readTag 通道不可用（仅盘点能读到），写返回成功即视为已写入，需外部读卡器复核
             Log.w(TAG, "writeOneTagDual: EPC 写成功但单读回读为空（设备单读通道坏），按写入成功处理");
@@ -1225,6 +1232,16 @@ public class MainActivity extends AppCompatActivity {
      * 用于「换新标签写 EPC」场景：本设备（iData T1U）UHF 固件仅支持写 EPC 区，USER/TID 不可写。
      * 写前降功率避免误写邻近标签；写成功后若单读通道回读为空（本设备已知缺陷）则提示用专用读卡器复核。
      */
+    /** 把资产串零补齐到指定字节数（ASCII）。本设备 iData T1U 固件要求 EPC 写数据达到足够字长，过短会被拒；
+     *  资产号（如 PC00001）会被零补齐到标准 EPC 长度（12/14/16 字节之一），专用读卡器读到的是 "PC00001" + 零填充。 */
+    private static String epcPad(String s, int bytes) {
+        if (s == null) s = "";
+        if (s.length() >= bytes) return s;
+        StringBuilder sb = new StringBuilder(s);
+        while (sb.length() < bytes) sb.append('0');
+        return sb.toString();
+    }
+
     private void writeEpcAsset(String asset) {
         if (writing) return;
         if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
@@ -1245,25 +1262,35 @@ public class MainActivity extends AppCompatActivity {
                     // 而该路径仅在“范围内仅一张标签”授权后才会被走到。detectSingleTag 已确认单标签，
                     // 故在此授权不过滤写兜底；tryWriteDataToEpc 内部有「仅当 writeBank==1」护栏，绝不会误伤 USER 区。
                     if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setAllowUnfilteredWrite(true);
-                    boolean ok = sdk.writeTagWithFilterSync(
-                            fBank, fStartBit, fLenBits, fData,
-                            ASSET_BANK, ASSET_START, asset, PWD, WRITE_TIMEOUT_MS);
+                    // 本设备 iData T1U 固件要求 EPC 写数据达到足够字长：实测 7 字节的 "PC00001" 被固件拒绝、14 字节可写成功。
+                    // 故依次尝试【原始串 + 零补齐到 12/14/16 字节】多种长度，取首个写成功的；资产号过短会被零补齐到标准 EPC 长度。
+                    String[] cands = new String[]{ asset, epcPad(asset, 12), epcPad(asset, 14), epcPad(asset, 16) };
+                    boolean ok = false;
+                    String usedAsset = asset;
+                    for (String cand : cands) {
+                        Log.i(TAG, "EPC_WRITE: 尝试写资产串 len=" + cand.length() + " val=" + cand);
+                        ok = sdk.writeTagWithFilterSync(
+                                fBank, fStartBit, fLenBits, fData,
+                                ASSET_BANK, ASSET_START, cand, PWD, WRITE_TIMEOUT_MS);
+                        if (ok) { usedAsset = cand; break; }
+                    }
                     if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setAllowUnfilteredWrite(false);
-                    // 回退：直驱 manager 级 writeDataToEpc（遍历 {3,0}/{1,2}/... 等参数组合，其中 {3,0} 为本设备唯一一次成功的实参），
+                    // 回退：直驱 manager 级 writeDataToEpc（遍历 {3,0}/{1,2}/... 等参数组合），
                     // 用于覆盖「标准带过滤写因设备回报 EPC 与芯片实际 EPC 不一致而 SELECT 匹配不上」的情况。
                     if (!ok && sdk instanceof IdataUhfAdapter) {
                         Log.i(TAG, "EPC_WRITE: 标准写未成功，回退 writeEpcRaw(bank/ptr 组合遍历)");
                         ok = ((IdataUhfAdapter) sdk).writeEpcRaw(PWD, FormatUtil.asciiToHex(asset));
+                        if (ok) usedAsset = asset;
                     }
                     if (!ok) {
                         resultMsg = "失败：EPC(资产编号)写入失败（标签可能已锁定、或不在天线范围内）";
                     } else {
-                        int wlen = (asset.length() + 1) / 2;
+                        int wlen = (usedAsset.length() + 1) / 2;
                         String r = sdk.readTagSync(ASSET_BANK, ASSET_START, wlen, PWD, READ_TIMEOUT_MS);
                         if (r == null) {
-                            resultMsg = "成功 ✓ 已将资产编号 " + asset + " 写入 EPC（设备单读通道不可用，请用专用读卡器复核）";
-                        } else if (FormatUtil.hexToAscii(r).trim().equals(asset)) {
-                            resultMsg = "成功 ✓ 已将资产编号 " + asset + " 写入 EPC 并回读校验通过";
+                            resultMsg = "成功 ✓ 已将资产编号 " + usedAsset + " 写入 EPC（设备单读通道不可用，请用专用读卡器复核）";
+                        } else if (FormatUtil.hexToAscii(r).trim().equals(usedAsset)) {
+                            resultMsg = "成功 ✓ 已将资产编号 " + usedAsset + " 写入 EPC 并回读校验通过";
                         } else {
                             resultMsg = "成功 ✓（写返回成功）但回读不一致 read=" + r + "，请用专用读卡器复核";
                         }
