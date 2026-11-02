@@ -988,25 +988,43 @@ public class MainActivity extends AppCompatActivity {
         }
         reading = true;
         setStatus("正在读取 C1 标签…");
-        sdk.setPower(getParam("power", 30));            // 读取保持正常功率，扩大 A1 读取范围
+        sdk.setPower(getParam("power", 30));            // 读取保持正常功率
         new Thread(() -> {
             try {
-                // 构造 A1 固定过滤条件（bank=1, 跳过前 2 字 CRC/PC, 96bit=24hex 字符）
-                String fData = TARGET_EPC;
-                int fBank = A1_FILTER_BANK;
-                int fStartBit = A1_FILTER_START_BIT;
-                int fLenBits = A1_FILTER_LEN_BITS;
-
+                // 先盘点探测：确认 C1 在范围内，且探测到的目标就是 C1（防误读/误写其它标签）
+                TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+                if (tag == null) {
+                    runOnUiThread(() -> {
+                        if (tvA1Result != null) tvA1Result.setText("失败：天线范围内未检测到标签，请将 C1 放到天线附近");
+                        setStatus("C1 读取失败：未检测到标签");
+                    });
+                    return;
+                }
+                // 硬校验：探测到的标签必须是 C1（EPC 前缀匹配），否则拒绝，避免误读其它标签
+                if (tag.epc == null || !tag.epc.toUpperCase().startsWith(TARGET_EPC.toUpperCase())) {
+                    final String got = tag.epc != null ? tag.epc : "(null)";
+                    runOnUiThread(() -> {
+                        if (tvA1Result != null) tvA1Result.setText(
+                                "失败：探测到的不是 C1。\n实际 EPC=" + got
+                                        + "\n期望 C1=" + TARGET_EPC
+                                        + "\n请只把 C1 标签放到天线附近，移开其它标签");
+                        setStatus("C1 读取失败：探测到非 C1 标签");
+                    });
+                    return;
+                }
+                // 用探测到的 C1 构造过滤条件（沿用已验证的 buildFilter：有 TID 则用 TID 唯一锁定，否则用 EPC 前辍短掩码）
+                String[] f = buildFilter(tag);
+                int fBank = Integer.parseInt(f[0]);
+                int fStartBit = Integer.parseInt(f[1]);
+                int fLenBits = Integer.parseInt(f[2]);
+                String fData = f[3];
                 // 带过滤读取：TID / EPC / USER
                 String tid = sdk.readTagSync(2, 0, 6, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
                 String epc = sdk.readTagSync(1, 2, 8, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
                 String user = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
                 String userUtf8 = user != null ? FormatUtil.hexToUtf8(user) : "";
-
-                // 校验是否真的锁到了 A1（EPC 回读需匹配固定 TARGET_EPC），避免误读其他标签
-                // EPC 读取为 8 字(32 hex)，TARGET_EPC 仅 24 hex；用前缀匹配避免长度不等导致的假阴性
                 boolean locked = epc != null && epc.toUpperCase().startsWith(TARGET_EPC.toUpperCase());
-                String disp = "锁定 C1(EPC=" + TARGET_EPC + "): " + (locked ? "成功 ✓" : "失败（未读到匹配 EPC 的标签）")
+                String disp = "锁定 C1(EPC=" + TARGET_EPC + "): " + (locked ? "成功 ✓" : "失败（读取返回空）")
                         + "\nTID  : " + nz(tid)
                         + "\nEPC  : " + nz(epc)
                         + "\nUSER : " + nz(user)
@@ -1014,7 +1032,7 @@ public class MainActivity extends AppCompatActivity {
                 final boolean okLock = locked;
                 runOnUiThread(() -> {
                     if (tvA1Result != null) tvA1Result.setText(disp);
-                    setStatus(okLock ? "C1 读取完成（TID/EPC/USER 已读）" : "C1 读取失败：未读到匹配 EPC 的标签");
+                    setStatus(okLock ? "C1 读取完成（TID/EPC/USER 已读）" : "C1 读取失败：读取返回空");
                 });
             } finally {
                 reading = false;
@@ -1044,29 +1062,38 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             String resultMsg;
             try {
-                // 构造 A1 固定过滤条件（始终基于 TARGET_EPC，确保只写 A1）
-                String fData = TARGET_EPC;
-                int fBank = A1_FILTER_BANK;
-                int fStartBit = A1_FILTER_START_BIT;
-                int fLenBits = A1_FILTER_LEN_BITS;
-
-                // 写入 USER 区（bank3, word0），内容 "R2|PC00001"，带 TARGET_EPC 过滤
-                boolean ok = sdk.writeTagWithFilterSync(
-                        fBank, fStartBit, fLenBits, fData,
-                        A1_WRITE_BANK, A1_WRITE_START_WORD, A1_WRITE_PAYLOAD, PWD, WRITE_TIMEOUT_MS);
-                if (!ok) {
-                    resultMsg = "失败：C1(USER 区) 写入失败（未匹配到 C1 标签，或写入超时）";
+                // 先盘点探测并硬校验：只写 C1，绝不写其它标签
+                TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+                if (tag == null) {
+                    resultMsg = "失败：天线范围内未检测到标签，请将 C1 放到天线附近";
+                } else if (tag.epc == null || !tag.epc.toUpperCase().startsWith(TARGET_EPC.toUpperCase())) {
+                    resultMsg = "失败：探测到的不是 C1（实际 EPC=" + (tag.epc != null ? tag.epc : "(null)")
+                            + "），已拒绝写入，避免误写其它标签。请只把 C1 放到天线附近";
                 } else {
-                    // 回读校验：读取 USER 区实际写入内容，断言等于 "R2|PC00001"
-                    byte[] payloadBytes = A1_WRITE_PAYLOAD.getBytes(StandardCharsets.UTF_8);
-                    int wordLen = (payloadBytes.length + 1) / 2;
-                    String rUser = sdk.readTagSync(A1_WRITE_BANK, A1_WRITE_START_WORD, wordLen,
-                            PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
-                    String rUtf8 = rUser != null ? FormatUtil.hexToUtf8(rUser) : "";
-                    boolean verified = A1_WRITE_PAYLOAD.equals(rUtf8);
-                    resultMsg = verified
-                            ? "成功 ✓ 已将资产编号 PC00001 写入 C1 的 USER 区，回读校验通过（" + rUtf8 + "）"
-                            : "失败：回读不一致（期望 " + A1_WRITE_PAYLOAD + "，实际 " + rUtf8 + "）";
+                    // 用探测到的 C1 构造过滤条件（有 TID 则唯一锁定 C1；否则 EPC 前辍短掩码，需确保仅 C1 在范围内）
+                    String[] f = buildFilter(tag);
+                    int fBank = Integer.parseInt(f[0]);
+                    int fStartBit = Integer.parseInt(f[1]);
+                    int fLenBits = Integer.parseInt(f[2]);
+                    String fData = f[3];
+                    // 写入 USER 区（bank3, word0），内容 "R2|PC00001"
+                    boolean ok = sdk.writeTagWithFilterSync(
+                            fBank, fStartBit, fLenBits, fData,
+                            A1_WRITE_BANK, A1_WRITE_START_WORD, A1_WRITE_PAYLOAD, PWD, WRITE_TIMEOUT_MS);
+                    if (!ok) {
+                        resultMsg = "失败：C1(USER 区) 写入失败（未匹配到 C1，或写入超时）";
+                    } else {
+                        // 回读校验：读取 USER 区实际写入内容，断言等于 "R2|PC00001"
+                        byte[] payloadBytes = A1_WRITE_PAYLOAD.getBytes(StandardCharsets.UTF_8);
+                        int wordLen = (payloadBytes.length + 1) / 2;
+                        String rUser = sdk.readTagSync(A1_WRITE_BANK, A1_WRITE_START_WORD, wordLen,
+                                PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
+                        String rUtf8 = rUser != null ? FormatUtil.hexToUtf8(rUser) : "";
+                        boolean verified = A1_WRITE_PAYLOAD.equals(rUtf8);
+                        resultMsg = verified
+                                ? "成功 ✓ 已将资产编号 PC00001 写入 C1 的 USER 区，回读校验通过（" + rUtf8 + "）"
+                                : "失败：回读不一致（期望 " + A1_WRITE_PAYLOAD + "，实际 " + rUtf8 + "）";
+                    }
                 }
             } catch (Exception e) {
                 resultMsg = "异常：" + e.getMessage();
