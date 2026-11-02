@@ -950,7 +950,10 @@ public class MainActivity extends AppCompatActivity {
                             ? "检测到的标签：无（请确保天线范围内仅一张标签）"
                             : "检测到的标签：无（" + detectFailReason + "）");
                 } else {
-                    tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
+                    String dEpc = nz(tag.epc);
+                    String dAsc = dEpc.length() >= 2 ? FormatUtil.hexToAscii(dEpc) : "";
+                    tvDetected.setText("检测到的标签：EPC=" + dEpc
+                            + (dAsc.isEmpty() ? "" : "  (" + dAsc + ")")
                             + (tag.tid != null && !tag.tid.isEmpty() ? "  TID=" + tag.tid : "")
                             + (detectFailReason.isEmpty() ? "" : "\n(" + detectFailReason + ")"));
                 }
@@ -999,17 +1002,22 @@ public class MainActivity extends AppCompatActivity {
                 lastReadInfo.put("userHex", nz(user));
                 lastReadInfo.put("userUtf8", nz(userUtf8));
                 lastReadInfo.put("readAt", nowIso());
-                String disp = "EPC  : " + nz(tag.epc)
+                String epcHex = nz(tag.epc);
+                String epcAscii = epcHex.length() >= 2 ? FormatUtil.hexToAscii(epcHex) : "";
+                String epcNote = epcHex.length() <= 8 ? "  （仅前" + (epcHex.length() / 2) + "字节，盘点未回传完整EPC）" : "";
+                String disp = "EPC  : " + epcHex
+                        + (epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")") + epcNote
                         + "\nTID  : " + nz(tid)
                         + "\nUSER : " + nz(user)
                         + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8);
                 runOnUiThread(() -> {
                     if (tvDetected != null)
-                        tvDetected.setText("检测到的标签：EPC=" + nz(tag.epc)
+                        tvDetected.setText("检测到的标签：EPC=" + epcHex
+                                + (epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")")
                                 + (nz(tid).isEmpty() ? "" : "  TID=" + tid)
                                 + (detectFailReason.isEmpty() ? "" : "\n(" + detectFailReason + ")"));
                     if (tvReadData != null) tvReadData.setText(disp);
-                    if (tvEpc != null) tvEpc.setText(nz(tag.epc));
+                    if (tvEpc != null) tvEpc.setText(epcHex + (epcAscii.isEmpty() ? "" : "\n(" + epcAscii + ")"));
                     if (tvTid != null) tvTid.setText(nz(tid));
                     if (tvUser != null) tvUser.setText(nz(user) + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8));
                     setStatus("读取完成（TID/EPC/USER 已读，可点「导出读取数据」）");

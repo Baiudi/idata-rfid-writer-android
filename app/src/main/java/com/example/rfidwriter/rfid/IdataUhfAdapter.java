@@ -401,6 +401,14 @@ public class IdataUhfAdapter implements RfidSdk {
             } catch (Throwable e) {
                 Log.w(TAG, "registerUHFCallback 绑定失败（忽略，走轮询路径）", e);
             }
+            // 盘点时额外回传 EPC 区(bank1, word2 起) 的完整数据，使读取/检测界面能显示完整资产号，
+            // 而非固件按 PC 控制字截断的前 4 字节。这是【读卡器侧】设置，不触碰标签；save=false 不落盘，可随时复位。
+            try {
+                Object itb = callIface("inventoryTagBankSet", 1, 2, 6, false);
+                Log.i(TAG, "startInventory: inventoryTagBankSet(1,2,6,false) ret=" + itb);
+            } catch (Throwable e) {
+                Log.w(TAG, "inventoryTagBankSet 调用失败（忽略，回退到默认盘点 EPC）", e);
+            }
             Object r = callIface("startInventoryTag");
             boolean started = r instanceof Boolean ? (Boolean) r : (r != null);
             Log.i(TAG, "startInventory: startInventoryTag 已调用 ret=" + started);
