@@ -838,8 +838,10 @@ public class MainActivity extends AppCompatActivity {
         if (tag.tid != null && !tag.tid.isEmpty()) {
             fBank = 2; fStartBit = 0; fLenBits = tag.tid.length() * 4; fData = tag.tid;
         } else {
-            String e = tag.epc != null && tag.epc.length() >= 8 ? tag.epc.substring(0, 8) : tag.epc;
-            fBank = 1; fStartBit = 32; fLenBits = e.length() * 4; fData = e;
+            // 用【完整 EPC】做过滤（与参考 App writeWholeEpc 一致：fBank=1, fStartBit=32, fLenBits=96, fData=完整24hex EPC）。
+            // 注意：截取前 8hex 的“前缀过滤”会导致固件 writeTag 的 SELECT 不匹配而写失败，必须用完整 EPC。
+            String e = tag.epc;
+            fBank = 1; fStartBit = 32; fLenBits = (e != null ? e.length() : 0) * 4; fData = e;
         }
         return new String[]{String.valueOf(fBank), String.valueOf(fStartBit), String.valueOf(fLenBits), fData};
     }
