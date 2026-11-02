@@ -609,11 +609,22 @@ public class IdataUhfAdapter implements RfidSdk {
                                     byte[] dataBytes, String dataHex, String pwd) {
         Class<?> mc = mgr.getClass();
         byte[] filterBytes = hexToBytes(fData);
+        int wordLen = (dataBytes.length + 1) / 2;   // 字数 = (字节数+1)/2（iData 多数固件 writeTag 的 cnt 为字数）
+        int byteLen = dataBytes.length;             // 少数固件把 cnt 当作字节数，作为备选
 
         // ---- 第一组：带过滤写（最安全，只写匹配标签）----
-        // 候选 A：writeTagWithFilter(int fBank,int fStartBlock,int fLen,String fData,int writeBank,int startBlock,String writeData,String pwd)
-        // 候选 B：writeTagWithFilter(int fBank,int fStartBlock,int fLen,byte[],int writeBank,int startBlock,byte[],String pwd)
+        // 设备实测 UHFManager 真实签名（来自本次 introspection 日志）：
+        //   boolean writeTag(String pwd, int bank, int ptr, int cnt, String dataHex,
+        //                    int fBank, int fStartBit, int fLenBits, String filterEpc)
+        // 即写操作自带过滤（最后 4 个参数为 SELECT 过滤条件），可精确锁定 C1 不误写其它标签。
+        // 候选 A：cnt 取字数（主流 iData 约定）
+        // 候选 B：cnt 取字节数（部分固件约定）；dataHex 长度均一致，仅 cnt 含义不同
+        // 候选 C/D：writeTagWithFilter 字符串/字节变体（旧 SDK 形态，本设备可能无，仅作兜底）
         Object[][][] filtered = new Object[][][]{
+                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
+                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fBank, fStartBit, fLenBits, fData}},
                 {{"writeTagWithFilter", int.class, int.class, int.class, String.class, int.class, int.class, String.class, String.class},
                         new Object[]{fBank, fStartBit, fLenBits, fData, writeBank, startWord, dataHex, pwd}},
                 {{"writeTagWithFilter", int.class, int.class, int.class, byte[].class, int.class, int.class, byte[].class, String.class},
