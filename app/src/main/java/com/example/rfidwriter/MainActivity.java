@@ -392,6 +392,46 @@ public class MainActivity extends AppCompatActivity {
         Toast.makeText(this, "设置已保存", Toast.LENGTH_SHORT).show();
     }
 
+    /**
+     * iData T1U 的 UHF 固件在盘点时只回传 EPC 前 4 字节（如 50433030 = "PC00"），
+     * 单读通道（readTagSync EPC）在本设备又不可用，因此读取/检测页拿不到完整资产编号。
+     * 解决办法：写卡成功后把“本机刚写入的完整 EPC / 资产编号”持久化到 prefs，
+     * 读取时若盘点回传的前缀与记录匹配，就据本机写入记录把完整值补全展示（并标注来源，提示用专用读卡器复核）。
+     */
+    private String getRecordedFullEpc() {
+        return prefs.getString("lastWrittenEpc", "");
+    }
+
+    private String getRecordedAsset() {
+        return prefs.getString("lastWrittenAsset", "");
+    }
+
+    /**
+     * 若盘点回传的（被截断）EPC hex 前缀与“本机最近一次写入的完整 EPC”匹配，
+     * 返回补全后的完整 EPC（ASCII，含补零）；否则返回 null。
+     * 匹配规则：记录值转标签 hex 后与回传 hex 前缀比对；退路再用回传 hex 的 ASCII 前缀比对记录值。
+     */
+    private String matchRecordedFullEpc(String invEpcHex) {
+        String rec = getRecordedFullEpc();
+        if (rec == null || rec.isEmpty() || invEpcHex == null || invEpcHex.length() < 4) return null;
+        String inv = invEpcHex.toUpperCase();
+        String recHex = asciiToHex(rec);
+        if (recHex != null && recHex.toUpperCase().startsWith(inv)) return rec;
+        String invAsc = FormatUtil.hexToAscii(inv);
+        if (invAsc != null && rec.startsWith(invAsc)) return rec;
+        return null;
+    }
+
+    /** ASCII 字符串转其字节对应的 hex（如 "PC00" -> "504300"）；非法返回 null */
+    private String asciiToHex(String s) {
+        if (s == null) return null;
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < s.length(); i++) {
+            sb.append(String.format("%02X", (int) s.charAt(i)));
+        }
+        return sb.toString();
+    }
+
     // ----------------- 崩溃自诊断（远程排查用） -----------------
 
     /** 安装全局未捕获异常处理器：崩溃时把堆栈写入文件，下次启动弹窗展示 */
@@ -825,6 +865,12 @@ public class MainActivity extends AppCompatActivity {
             if (epcOk) { usedAsset = cand; break; }
         }
         if (!epcOk) { fail(item, "EPC(资产编号)写入失败"); return; }
+        // 记录本次成功写入的完整 EPC（iData T1U 盘点仅回传前 4 字节，读/检测页据本记录补全显示）
+        prefs.edit()
+                .putString("lastWrittenEpc", usedAsset)
+                .putString("lastWrittenAsset", item.assetNo)
+                .apply();
+        Log.i(TAG, "writeOneTagDual: 已记录本机写入完整 EPC=" + usedAsset + " asset=" + item.assetNo);
         int assetWordLen = (usedAsset.length() + 1) / 2;
         String rEpc = sdk.readTagSync(ASSET_BANK, ASSET_START, assetWordLen, PWD, READ_TIMEOUT_MS);
         boolean epcV = rEpc != null && FormatUtil.hexToAscii(rEpc).trim().equals(usedAsset);
@@ -952,10 +998,20 @@ public class MainActivity extends AppCompatActivity {
                 } else {
                     String dEpc = nz(tag.epc);
                     String dAsc = dEpc.length() >= 2 ? FormatUtil.hexToAscii(dEpc) : "";
-                    tvDetected.setText("检测到的标签：EPC=" + dEpc
-                            + (dAsc.isEmpty() ? "" : "  (" + dAsc + ")")
-                            + (tag.tid != null && !tag.tid.isEmpty() ? "  TID=" + tag.tid : "")
-                            + (detectFailReason.isEmpty() ? "" : "\n(" + detectFailReason + ")"));
+                    String fullEpc = matchRecordedFullEpc(dEpc);
+                    StringBuilder sb = new StringBuilder();
+                    sb.append("检测到的标签：EPC=").append(dEpc)
+                            .append(dAsc.isEmpty() ? "" : "  (" + dAsc + ")");
+                    if (fullEpc != null && !fullEpc.equalsIgnoreCase(dAsc)) {
+                        String recAsset = getRecordedAsset();
+                        sb.append("\n完整EPC(本机写入记录补全): ").append(fullEpc);
+                        if (!recAsset.isEmpty()) sb.append("   资产编号: ").append(recAsset);
+                        sb.append("\n  ↳ 盘点仅回传前缀 ").append(dEpc)
+                                .append("，完整值据本机写入记录补全；请用专用读卡器复核");
+                    }
+                    if (tag.tid != null && !tag.tid.isEmpty()) sb.append("  TID=").append(tag.tid);
+                    if (!detectFailReason.isEmpty()) sb.append("\n(").append(detectFailReason).append(")");
+                    tvDetected.setText(sb.toString());
                 }
             });
         }).start();
@@ -1005,19 +1061,37 @@ public class MainActivity extends AppCompatActivity {
                 String epcHex = nz(tag.epc);
                 String epcAscii = epcHex.length() >= 2 ? FormatUtil.hexToAscii(epcHex) : "";
                 String epcNote = epcHex.length() <= 8 ? "  （仅前" + (epcHex.length() / 2) + "字节，盘点未回传完整EPC）" : "";
-                String disp = "EPC  : " + epcHex
-                        + (epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")") + epcNote
-                        + "\nTID  : " + nz(tid)
-                        + "\nUSER : " + nz(user)
-                        + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8);
+                String fullEpc = matchRecordedFullEpc(epcHex);
+                String recAsset = getRecordedAsset();
+                boolean showFull = fullEpc != null && !fullEpc.equalsIgnoreCase(epcAscii);
+                StringBuilder disp = new StringBuilder();
+                disp.append("EPC  : ").append(epcHex)
+                        .append(epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")").append(epcNote);
+                if (showFull) {
+                    disp.append("\n完整EPC(本机写入记录补全): ").append(fullEpc);
+                    if (!recAsset.isEmpty()) disp.append("   资产编号: ").append(recAsset);
+                    disp.append("\n  ↳ 盘点仅回传前缀 ").append(epcHex)
+                            .append("，完整值据本机写入记录补全；请用专用读卡器复核");
+                }
+                disp.append("\nTID  : ").append(nz(tid))
+                        .append("\nUSER : ").append(nz(user));
+                if (!userUtf8.isEmpty()) disp.append("\nUSER(解析): ").append(userUtf8);
+                String fullEpcNote = showFull
+                        ? "\n完整EPC(本机写入记录补全): " + fullEpc
+                          + (recAsset.isEmpty() ? "" : "  资产编号:" + recAsset)
+                          + "\n  ↳ 盘点仅回传前缀 " + epcHex + "，据本机写入记录补全；请用专用读卡器复核"
+                        : "";
                 runOnUiThread(() -> {
                     if (tvDetected != null)
                         tvDetected.setText("检测到的标签：EPC=" + epcHex
                                 + (epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")")
+                                + fullEpcNote
                                 + (nz(tid).isEmpty() ? "" : "  TID=" + tid)
                                 + (detectFailReason.isEmpty() ? "" : "\n(" + detectFailReason + ")"));
-                    if (tvReadData != null) tvReadData.setText(disp);
-                    if (tvEpc != null) tvEpc.setText(epcHex + (epcAscii.isEmpty() ? "" : "\n(" + epcAscii + ")"));
+                    if (tvReadData != null) tvReadData.setText(disp.toString());
+                    if (tvEpc != null) tvEpc.setText(showFull
+                            ? fullEpc + "\n(盘点回传: " + epcHex + " " + epcAscii + ")"
+                            : epcHex + (epcAscii.isEmpty() ? "" : "\n(" + epcAscii + ")"));
                     if (tvTid != null) tvTid.setText(nz(tid));
                     if (tvUser != null) tvUser.setText(nz(user) + (userUtf8.isEmpty() ? "" : "\nUSER(解析): " + userUtf8));
                     setStatus("读取完成（TID/EPC/USER 已读，可点「导出读取数据」）");

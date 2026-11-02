@@ -378,22 +378,6 @@ public class IdataUhfAdapter implements RfidSdk {
         }
     }
 
-    /** 让盘点额外回传 EPC 区(bank1,word2 起,6 字=12 字节) 完整数据，使读/检测界面显示完整资产号。
-     * 直接对 UHFManager 实例(mRawManager 优先 / mUhf 兜底) 反射调用 inventoryTagBankSet ——
-     * 该方法只存在于 UHFManager，UHFInterface 上没有，故不能走 callIface。
-     * 读卡器侧设置，不触碰标签；save=false 不落盘，可随时用 resetDefaultSetting 复位。 */
-    private void enableFullEpcInventory() {
-        Object target = (mRawManager != null) ? mRawManager : mUhf;
-        if (target == null) { Log.w(TAG, "enableFullEpcInventory: 无可用 UHFManager 实例，跳过"); return; }
-        try {
-            Method m = target.getClass().getMethod("inventoryTagBankSet", int.class, int.class, int.class, boolean.class);
-            Object r = m.invoke(target, 1, 2, 6, false);
-            Log.i(TAG, "enableFullEpcInventory: inventoryTagBankSet(1,2,6,false) ret=" + r);
-        } catch (Throwable e) {
-            Log.w(TAG, "enableFullEpcInventory: inventoryTagBankSet 失败（回退默认盘点 EPC）", e);
-        }
-    }
-
     @Override
     public void setInventoryMode(int mode) {
         if (!mConnected.get()) return;
@@ -417,9 +401,6 @@ public class IdataUhfAdapter implements RfidSdk {
             } catch (Throwable e) {
                 Log.w(TAG, "registerUHFCallback 绑定失败（忽略，走轮询路径）", e);
             }
-            // 盘点时额外回传 EPC 区(bank1, word2 起) 的完整数据，使读取/检测界面能显示完整资产号，
-            // 而非固件按 PC 控制字截断的前 4 字节。这是【读卡器侧】设置，不触碰标签；save=false 不落盘，可随时复位。
-            enableFullEpcInventory();
             Object r = callIface("startInventoryTag");
             boolean started = r instanceof Boolean ? (Boolean) r : (r != null);
             Log.i(TAG, "startInventory: startInventoryTag 已调用 ret=" + started);
