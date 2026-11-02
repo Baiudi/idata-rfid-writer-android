@@ -1353,6 +1353,7 @@ public class MainActivity extends AppCompatActivity {
                     String[] f = buildFilter(tag);
                     int fBank = Integer.parseInt(f[0]), fStartBit = Integer.parseInt(f[1]), fLenBits = Integer.parseInt(f[2]);
                     String fData = f[3];
+                    Log.i(TAG, "EPC_WRITE: 检测到标签 epc=" + nz(tag.epc) + " tid=" + nz(tag.tid));
                     Log.i(TAG, "EPC_WRITE: 开始把资产编号 " + asset + " 写入 EPC 区(bank1,word2) fData=" + fData);
                     // 本设备固件经实测【仅 manager 级 writeDataToEpc（作用于最近盘点到的标签）可成功写 EPC】，
                     // 而该路径仅在“范围内仅一张标签”授权后才会被走到。detectSingleTag 已确认单标签，
@@ -1381,6 +1382,12 @@ public class MainActivity extends AppCompatActivity {
                     if (!ok) {
                         resultMsg = "失败：EPC(资产编号)写入失败（标签可能已锁定、或不在天线范围内）";
                     } else {
+                        // 记录本次成功写入的完整 EPC（iData T1U 盘点仅回传前 4 字节，读/检测页据本记录补全显示）
+                        prefs.edit()
+                                .putString("lastWrittenEpc", usedAsset)
+                                .putString("lastWrittenAsset", asset)
+                                .apply();
+                        Log.i(TAG, "EPC_WRITE: 已记录本机写入完整 EPC=" + usedAsset + " asset=" + asset);
                         int wlen = (usedAsset.length() + 1) / 2;
                         String r = sdk.readTagSync(ASSET_BANK, ASSET_START, wlen, PWD, READ_TIMEOUT_MS);
                         if (r == null) {
