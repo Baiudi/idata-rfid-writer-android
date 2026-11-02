@@ -623,15 +623,19 @@ public class IdataUhfAdapter implements RfidSdk {
         //                    int fBank, int fStartBit, int fLenBits, String filterEpc)
         // 最后 4 个参数为 SELECT 过滤条件。本设备单读/单写“带过滤”此前返回空/失败，故逐一尝试多种掩码长度，
         // 以适配固件对掩码位数(32/64/80/96)的接受上限；cnt 取字数(主流)。
+        // 候选顺序：完整 EPC(96bit) 掩码优先（最精确锁定 C1），word/byte 两种 cnt 约定各试一次；
+        // 再补 32/64/80bit 前缀掩码（兼容固件对掩码位数的接受上限）。
         Object[][][] filtered = new Object[][][]{
+                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
+                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fBank, fStartBit, fLenBits, fData}},
                 {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
                         new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 32, fPrefix}},
                 {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
                         new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 64, fPrefix16}},
                 {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
                         new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 80, fPrefix20}},
-                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
                 {{"writeTagWithFilter", int.class, int.class, int.class, String.class, int.class, int.class, String.class, String.class},
                         new Object[]{fBank, fStartBit, fLenBits, fData, writeBank, startWord, dataHex, pwd}},
                 {{"writeTagWithFilter", int.class, int.class, int.class, byte[].class, int.class, int.class, byte[].class, String.class},
@@ -647,6 +651,7 @@ public class IdataUhfAdapter implements RfidSdk {
                 Method m = mc.getMethod(name, types);
                 triedFiltered = true;
                 Log.i(TAG, "writeViaManager: 命中过滤写方法 " + m.toString());
+                Log.i(TAG, "writeViaManager: 尝试 " + name + " 参=" + java.util.Arrays.toString(args));
                 Object r = m.invoke(mgr, args);
                 boolean ok = interpretWriteReturn(r);
                 Log.i(TAG, "writeViaManager: " + name + " 返回=" + r + " -> ok=" + ok);
@@ -660,10 +665,11 @@ public class IdataUhfAdapter implements RfidSdk {
         }
         if (triedFiltered) {
             // 过滤写方法存在但均返回失败：仅当业务层确认“范围内只有 C1 一张标签”时，
-            // 才降级为不过滤写（写当前唯一应答的标签，即 C1），避免误写 C59A 等其它标签。
+            // 才降级为不过滤写 / writeDataToEpc（写当前唯一应答的标签，即 C1），避免误写 C59A 等其它标签。
             if (mAllowUnfiltered) {
-                Log.w(TAG, "writeViaManager: 过滤写均失败，按允许降级为不过滤写（仅 C1 在场时安全）");
-                if (tryUnfilteredWrite(mc, pwd, writeBank, startWord, wordLen, dataHex)) return true;
+                Log.w(TAG, "writeViaManager: 过滤写均失败，按允许降级为不过滤写 / writeDataToEpc（仅 C1 在场时安全）");
+                if (tryUnfilteredWrite(mc, pwd, writeBank, startWord, dataHex, wordLen, byteLen)) return true;
+                if (tryWriteDataToEpc(mgr, pwd, writeBank, startWord, dataHex)) return true;
             } else {
                 Log.w(TAG, "writeViaManager: 过滤写均失败，且未授权不过滤写（防误写其它标签），放弃");
             }
@@ -708,18 +714,39 @@ public class IdataUhfAdapter implements RfidSdk {
     /** 业务层在探测确认“范围内只有目标一张标签”时调用，允许过滤写全部失败后降级为不过滤写 */
     public void setAllowUnfilteredWrite(boolean v) { mAllowUnfiltered = v; }
 
-    /** 不过滤写：filterEpc 留空，写当前天线范围内唯一应答的标签（仅在 mAllowUnfiltered 时由 writeViaManager 调用） */
+    /** 不过滤写：filterEpc 留空，写当前天线范围内唯一应答的标签（仅在 mAllowUnfiltered 时由 writeViaManager 调用）。
+     *  cnt 同时尝试“字数(wordLen)”与“字节数(byteLen)”两种约定，兼容不同固件。 */
     private boolean tryUnfilteredWrite(Class<?> mc, String pwd, int writeBank, int startWord,
-                                       int wordLen, String dataHex) {
+                                       String dataHex, int wordLen, int byteLen) {
+        int[] cnts = {wordLen, byteLen};
+        for (int cnt : cnts) {
+            try {
+                Method m = mc.getMethod("writeTag",
+                        String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class);
+                Log.i(TAG, "writeViaManager: 尝试 不过滤写 writeTag cnt=" + cnt);
+                Object r = m.invoke(mgrOf(mc), pwd, writeBank, startWord, cnt, dataHex, 0, 0, 0, "");
+                boolean ok = interpretWriteReturn(r);
+                Log.i(TAG, "writeViaManager: 不过滤写 writeTag(cnt=" + cnt + ") 返回=" + r + " -> ok=" + ok);
+                if (ok) return true;
+            } catch (Throwable e) {
+                Log.w(TAG, "writeViaManager: 不过滤写(cnt=" + cnt + ") 异常", e);
+            }
+        }
+        return false;
+    }
+
+    /** 写最近一次盘点聚焦到的标签（iData 部分固件 writeDataToEpc 作用于上次盘点的标签，无需显式 SELECT）。
+     *  仅在 mAllowUnfiltered（范围内仅 C1）时调用，避免误写其它标签。 */
+    private boolean tryWriteDataToEpc(Object mgr, String pwd, int writeBank, int startWord, String dataHex) {
         try {
-            Method m = mc.getMethod("writeTag",
-                    String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class);
-            Object r = m.invoke(mgrOf(mc), pwd, writeBank, startWord, wordLen, dataHex, 0, 0, 0, "");
+            Method m = mgr.getClass().getMethod("writeDataToEpc", String.class, int.class, int.class, String.class);
+            Log.i(TAG, "writeViaManager: 尝试 writeDataToEpc bank=" + writeBank + " ptr=" + startWord);
+            Object r = m.invoke(mgr, pwd, writeBank, startWord, dataHex);
             boolean ok = interpretWriteReturn(r);
-            Log.i(TAG, "writeViaManager: 不过滤写 writeTag 返回=" + r + " -> ok=" + ok);
+            Log.i(TAG, "writeViaManager: writeDataToEpc 返回=" + r + " -> ok=" + ok);
             return ok;
         } catch (Throwable e) {
-            Log.w(TAG, "writeViaManager: 不过滤写异常", e);
+            Log.w(TAG, "writeViaManager: writeDataToEpc 异常", e);
             return false;
         }
     }
