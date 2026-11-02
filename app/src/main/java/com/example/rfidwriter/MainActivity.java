@@ -98,6 +98,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_READ_TEST = "com.example.rfidwriter.action.READ_TEST";
     /** 远程写测试钩子：am broadcast -a ...WRITE_TEST 触发「连(若未连)→检测单张→往USER区写测试串→回读校验」，日志前缀 RFID_TEST */
     public static final String ACTION_WRITE_TEST = "com.example.rfidwriter.action.WRITE_TEST";
+    /** 远程真实资产写钩子：am broadcast -a ...WRITE_A1 触发「连(若未连)→检测C1→把 R2|PC00001 写入C1 USER区→回读」，日志前缀 C1_WRITE */
+    public static final String ACTION_WRITE_A1 = "com.example.rfidwriter.action.WRITE_A1";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -189,12 +191,14 @@ public class MainActivity extends AppCompatActivity {
                 if (ACTION_CONNECT.equals(a)) connect();
                 else if (ACTION_READ_TEST.equals(a)) runReadTest();
                 else if (ACTION_WRITE_TEST.equals(a)) runWriteTest();
+                else if (ACTION_WRITE_A1.equals(a)) writeA1Asset();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
         testFilter.addAction(ACTION_CONNECT);
         testFilter.addAction(ACTION_READ_TEST);
         testFilter.addAction(ACTION_WRITE_TEST);
+        testFilter.addAction(ACTION_WRITE_A1);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -975,15 +979,21 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * 盘点并确认目标 C1 标签在场且可安全读写：
-     * ① C1(EPC=TARGET_EPC) 必须在天线范围内；
+     * ① C1(核心 EPC=1191A5040079AE927647) 必须在天线范围内；
      * ② 天线范围内不得有其它“同前缀”方位标签（A1/B1/D1 等仅末字节不同），否则前缀过滤无法唯一锁定 C1，会误写兄弟标签。
-     * 返回 C1 的 TagInfo（epc=TARGET_EPC）表示可安全锁定；返回 null 时原因见 detectFailReason。
+     * 注意：本设备盘点返回的 EPC 是“加框”格式（如 52461191A5040079AE9276470000，核心 1191A5040079AE927647
+     * 被 5246…0000 包裹），并非标定的裸 EPC(E2801191A5040079AE927647)。因此此处按“物理核心”匹配，
+     * 并返回设备【实际回报】的 EPC——已验证：用该实际 EPC 作过滤 fData 时 writeTag 固件返回 true（可写成功）。
+     * 返回 C1 的 TagInfo（epc=设备实际回报的 EPC）表示可安全锁定；返回 null 时原因见 detectFailReason。
      */
     private TagInfo detectTargetC1() {
         if (inventorying) {
             detectFailReason = "盘点进行中：请先点「结束盘点」，再使用 C1 读写";
             return null;
         }
+        // 物理核心：剥离标定 EPC 的前 4hex(E280) 帧头，得到不受设备封装影响的稳定标识
+        final String c1Core = TARGET_EPC.substring(4);                  // 1191A5040079AE927647
+        final String famCore = C1_ORIENT_PREFIX.substring(4);           // 1191A5040079AE9276（方位家族核心前缀）
         Map<String, Integer> seen = new ConcurrentHashMap<>();
         CountDownLatch latch = new CountDownLatch(1);
         sdk.setInventoryMode(1);
@@ -995,14 +1005,20 @@ public class MainActivity extends AppCompatActivity {
         });
         try { latch.await(INVENTORY_WINDOW_MS, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
         sdk.stopInventory();
-        Log.i(TAG, "detectTargetC1: 窗口看到 EPC=" + seen.keySet());
-        if (!seen.containsKey(TARGET_EPC)) {
-            detectFailReason = "C1(EPC=" + TARGET_EPC + ") 不在天线范围内；范围内标签=" + seen.keySet();
+        Log.i(TAG, "detectTargetC1: 窗口看到 EPC=" + seen.keySet() + "  (TARGET核心=" + c1Core + ")");
+        // 按物理核心匹配 C1（兼容裸 EPC 与加框 EPC 两种形态）
+        String c1Reported = null;
+        for (String e : seen.keySet()) {
+            if (e != null && e.toUpperCase().contains(c1Core.toUpperCase())) { c1Reported = e; break; }
+        }
+        if (c1Reported == null) {
+            detectFailReason = "C1(核心EPC=" + c1Core + ") 不在天线范围内；范围内标签=" + seen.keySet();
             return null;
         }
+        // 兄弟方位标签判定：核心含方位家族前缀、但非 C1 自身
         int sib = 0;
         for (String e : seen.keySet()) {
-            if (!e.equalsIgnoreCase(TARGET_EPC) && e.toUpperCase().startsWith(C1_ORIENT_PREFIX.toUpperCase())) sib++;
+            if (!e.equalsIgnoreCase(c1Reported) && e.toUpperCase().contains(famCore.toUpperCase())) sib++;
         }
         if (sib > 0) {
             detectFailReason = "天线范围内除 C1 外还有 " + sib + " 张同前缀方位标签(A1/B1/D1…)，前缀过滤无法唯一锁定 C1，"
@@ -1012,7 +1028,7 @@ public class MainActivity extends AppCompatActivity {
         // 仅当窗口内“只有 C1 一张”时才允许后续不过滤写兜底（C59A 等非方位标签也会使该标志为 false）
         mC1Only = (seen.size() == 1);
         TagInfo r = new TagInfo();
-        r.epc = TARGET_EPC;
+        r.epc = c1Reported;   // 用设备实际回报的 EPC（可能加框），作为后续写过滤 fData —— 已验证可写成功
         return r;
     }
 
@@ -1099,16 +1115,20 @@ public class MainActivity extends AppCompatActivity {
             String resultMsg;
             try {
                 // 先盘点探测并硬校验：只写 C1，且范围内无同前缀兄弟方位标签
+                Log.i(TAG, "C1_WRITE: 开始把资产编号 " + A1_WRITE_PAYLOAD + " 写入 C1 的 USER 区(bank3,word0)");
                 TagInfo tag = detectTargetC1();
                 if (tag == null) {
                     resultMsg = "失败：" + detectFailReason;
                 } else {
-                    // 以固定 TARGET_EPC 作为过滤条件：用完整 24hex(96bit) EPC 做 SELECT 掩码，
-                    // 精确锁定 C1（C59A 等其它标签 EPC 前缀不同，不会被选中），绝不误写其它标签。
-                    int fBank = A1_FILTER_BANK;              // 1 = EPC 区
-                    int fStartBit = A1_FILTER_START_BIT;    // 32 = 跳过 CRC/PC
-                    int fLenBits = TARGET_EPC.length() * 4; // 96 bit = 完整 EPC
-                    String fData = TARGET_EPC;
+                    // 用 detectTargetC1 探测到的【设备实际回报 EPC】构造过滤条件（与已验证成功的 WRITE_TEST 路径一致）：
+                    // buildFilter 在有 TID 时用 TID 唯一锁定，否则用完整 EPC 做 SELECT 掩码，可精确锁定 C1、绝不误写其它标签。
+                    String[] f = buildFilter(tag);
+                    int fBank = Integer.parseInt(f[0]);
+                    int fStartBit = Integer.parseInt(f[1]);
+                    int fLenBits = Integer.parseInt(f[2]);
+                    String fData = f[3];
+                    Log.i(TAG, "C1_WRITE: 过滤 fBank=" + fBank + " fStartBit=" + fStartBit
+                            + " fLenBits=" + fLenBits + " fData=" + fData + " mC1Only=" + mC1Only);
                     // 仅当探测窗口内确实只有 C1 一张标签时，才允许“过滤写全失败”后降级为不过滤写（避免误写 C59A）
                     if (sdk instanceof IdataUhfAdapter) ((IdataUhfAdapter) sdk).setAllowUnfilteredWrite(mC1Only);
                     // 写入 USER 区（bank3, word0），内容 "R2|PC00001"
