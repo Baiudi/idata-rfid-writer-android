@@ -915,8 +915,12 @@ public class IdataUhfAdapter implements RfidSdk {
         };
         for (Object[][] c : cands) {
             String name = (String) c[0][0];
-            if (name.equals("writeDataToEpc") && !allowUnfiltered) {
-                Log.d(TAG, "tryIfaceWrites: 跳过无过滤 writeDataToEpc（非 C1 单标签场景）");
+            // writeDataToEpc 无 SELECT 过滤，直接写“最近盘点的那张标签”。仅当本次就是写 EPC 区(writeBank==1) 时才允许，
+            // 避免 USER/TID 写失败时误落到 EPC 区覆盖标定 EPC；而 EPC 写本就是目标操作，
+            // 且 writeDataToEpc 是这台 iData T1U 上唯一被验证可用的 EPC 写方式。
+            // （调用方 writeOneTagDual / writeEpcAsset 已通过 detectSingleTag 保证范围内仅一张标签，不会误写其它标签。）
+            if (name.equals("writeDataToEpc") && writeBank != 1) {
+                Log.d(TAG, "tryIfaceWrites: 跳过 writeDataToEpc（本次非 EPC 写请求，防误写标定EPC）");
                 continue;
             }
             // 安全护栏：writeFullEpcTag / writeDataToEpc / writeWholeEpc 只写 EPC 区(bank1)。
