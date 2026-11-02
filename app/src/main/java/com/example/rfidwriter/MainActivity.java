@@ -104,6 +104,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_RESTORE_EPC = "com.example.rfidwriter.action.RESTORE_EPC";
     /** 远程 EPC 写钩子：am broadcast -a ...WRITE_EPC 把指定资产编号（默认 PC00001，可用 extra "asset" 覆盖）写入在场唯一标签的 EPC 区(bank1,word2)，日志前缀 EPC_WRITE */
     public static final String ACTION_WRITE_EPC = "com.example.rfidwriter.action.WRITE_EPC";
+    /** 远程 UI 读钩子：am broadcast -a ...READ_UI 触发「连(若未连)→检测单张→读TID/EPC/USER 并据本机写入记录补全EPC」，更新读卡页 TextView，日志前缀 READ_UI_RECON */
+    public static final String ACTION_READ_UI = "com.example.rfidwriter.action.READ_UI";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -202,6 +204,10 @@ public class MainActivity extends AppCompatActivity {
                     String asset = i.getStringExtra("asset");
                     writeEpcAsset(asset != null && !asset.isEmpty() ? asset : "PC00001");
                 }
+                else if (ACTION_READ_UI.equals(a)) {
+                    if (sdk.isConnected()) readFullTag();
+                    else { connect(); uiHandler.postDelayed(() -> readFullTag(), 3000); }
+                }
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
@@ -211,6 +217,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_WRITE_A1);
         testFilter.addAction(ACTION_RESTORE_EPC);
         testFilter.addAction(ACTION_WRITE_EPC);
+        testFilter.addAction(ACTION_READ_UI);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -999,6 +1006,10 @@ public class MainActivity extends AppCompatActivity {
                     String dEpc = nz(tag.epc);
                     String dAsc = dEpc.length() >= 2 ? FormatUtil.hexToAscii(dEpc) : "";
                     String fullEpc = matchRecordedFullEpc(dEpc);
+                    Log.i(TAG, "DETECT_RECON: invEpcHex=" + dEpc + " epcAscii=" + dAsc
+                            + " recordedFull=" + (fullEpc != null ? fullEpc : "<none>")
+                            + " recordedAsset=" + getRecordedAsset()
+                            + " showFull=" + (fullEpc != null && !fullEpc.equalsIgnoreCase(dAsc)));
                     StringBuilder sb = new StringBuilder();
                     sb.append("检测到的标签：EPC=").append(dEpc)
                             .append(dAsc.isEmpty() ? "" : "  (" + dAsc + ")");
@@ -1064,6 +1075,9 @@ public class MainActivity extends AppCompatActivity {
                 String fullEpc = matchRecordedFullEpc(epcHex);
                 String recAsset = getRecordedAsset();
                 boolean showFull = fullEpc != null && !fullEpc.equalsIgnoreCase(epcAscii);
+                Log.i(TAG, "READ_UI_RECON: invEpcHex=" + epcHex + " epcAscii=" + epcAscii
+                        + " recordedFull=" + (fullEpc != null ? fullEpc : "<none>")
+                        + " recordedAsset=" + recAsset + " showFull=" + showFull);
                 StringBuilder disp = new StringBuilder();
                 disp.append("EPC  : ").append(epcHex)
                         .append(epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")").append(epcNote);
