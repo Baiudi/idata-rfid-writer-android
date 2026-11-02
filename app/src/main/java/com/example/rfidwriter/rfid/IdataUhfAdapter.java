@@ -714,7 +714,7 @@ public class IdataUhfAdapter implements RfidSdk {
         try {
             Method m = mc.getMethod("writeTag",
                     String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class);
-            Object r = m.invoke(mgrOf(m), pwd, writeBank, startWord, wordLen, dataHex, 0, 0, 0, "");
+            Object r = m.invoke(mgrOf(mc), pwd, writeBank, startWord, wordLen, dataHex, 0, 0, 0, "");
             boolean ok = interpretWriteReturn(r);
             Log.i(TAG, "writeViaManager: 不过滤写 writeTag 返回=" + r + " -> ok=" + ok);
             return ok;
