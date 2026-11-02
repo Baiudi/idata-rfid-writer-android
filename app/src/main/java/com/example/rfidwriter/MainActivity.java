@@ -414,9 +414,13 @@ public class MainActivity extends AppCompatActivity {
     }
 
     /**
-     * 若盘点回传的（被截断）EPC hex 前缀与“本机最近一次写入的完整 EPC”匹配，
+     * 若盘点回传的（可能被固件截断或把 TID 当 EPC 返回的“加框”形态）EPC 能关联到“本机最近一次写入的完整 EPC”，
      * 返回补全后的完整 EPC（ASCII，含补零）；否则返回 null。
-     * 匹配规则：记录值转标签 hex 后与回传 hex 前缀比对；退路再用回传 hex 的 ASCII 前缀比对记录值。
+     * 关联规则（满足任一即认为关联到同一张本机写入的标签）：
+     *  1) 前缀匹配：回传 EPC hex 前缀 == 记录完整 EPC hex 前缀（标准截断场景 50433030 → PC00001…）；
+     *  2) 物理标签一致性：iData T1U 盘点对“同一张标签”回传的 EPC 形态是稳定的（即便它把 TID 当 EPC 返回），
+     *     故若本次回传 EPC 与“写卡时记录到的盘点 EPC”完全一致，即可认定是同一张标签，据本机记录补全；
+     *  3) ASCII 前缀兜底：回传 EPC hex 的 ASCII 前缀是记录值的开头。
      */
     private String matchRecordedFullEpc(String invEpcHex) {
         String rec = getRecordedFullEpc();
@@ -424,6 +428,8 @@ public class MainActivity extends AppCompatActivity {
         String inv = invEpcHex.toUpperCase();
         String recHex = asciiToHex(rec);
         if (recHex != null && recHex.toUpperCase().startsWith(inv)) return rec;
+        String recInv = prefs.getString("lastWrittenInvEpc", "");
+        if (!recInv.isEmpty() && inv.equals(recInv.toUpperCase())) return rec;
         String invAsc = FormatUtil.hexToAscii(inv);
         if (invAsc != null && rec.startsWith(invAsc)) return rec;
         return null;
@@ -872,12 +878,14 @@ public class MainActivity extends AppCompatActivity {
             if (epcOk) { usedAsset = cand; break; }
         }
         if (!epcOk) { fail(item, "EPC(资产编号)写入失败"); return; }
-        // 记录本次成功写入的完整 EPC（iData T1U 盘点仅回传前 4 字节，读/检测页据本记录补全显示）
+        // 记录本次成功写入的完整 EPC（iData T1U 盘点仅回传前 4 字节/或把 TID 当 EPC 返回，读/检测页据本记录补全显示）
         prefs.edit()
                 .putString("lastWrittenEpc", usedAsset)
                 .putString("lastWrittenAsset", item.assetNo)
+                .putString("lastWrittenInvEpc", nz(tag.epc))
                 .apply();
-        Log.i(TAG, "writeOneTagDual: 已记录本机写入完整 EPC=" + usedAsset + " asset=" + item.assetNo);
+        Log.i(TAG, "writeOneTagDual: 已记录本机写入完整 EPC=" + usedAsset + " asset=" + item.assetNo
+                + " invEpcAtWrite=" + nz(tag.epc));
         int assetWordLen = (usedAsset.length() + 1) / 2;
         String rEpc = sdk.readTagSync(ASSET_BANK, ASSET_START, assetWordLen, PWD, READ_TIMEOUT_MS);
         boolean epcV = rEpc != null && FormatUtil.hexToAscii(rEpc).trim().equals(usedAsset);
@@ -1077,7 +1085,8 @@ public class MainActivity extends AppCompatActivity {
                 boolean showFull = fullEpc != null && !fullEpc.equalsIgnoreCase(epcAscii);
                 Log.i(TAG, "READ_UI_RECON: invEpcHex=" + epcHex + " epcAscii=" + epcAscii
                         + " recordedFull=" + (fullEpc != null ? fullEpc : "<none>")
-                        + " recordedAsset=" + recAsset + " showFull=" + showFull);
+                        + " recordedAsset=" + recAsset + " showFull=" + showFull
+                        + " invEpcAtWrite=" + prefs.getString("lastWrittenInvEpc", ""));
                 StringBuilder disp = new StringBuilder();
                 disp.append("EPC  : ").append(epcHex)
                         .append(epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")").append(epcNote);
@@ -1382,12 +1391,14 @@ public class MainActivity extends AppCompatActivity {
                     if (!ok) {
                         resultMsg = "失败：EPC(资产编号)写入失败（标签可能已锁定、或不在天线范围内）";
                     } else {
-                        // 记录本次成功写入的完整 EPC（iData T1U 盘点仅回传前 4 字节，读/检测页据本记录补全显示）
+                        // 记录本次成功写入的完整 EPC（iData T1U 盘点仅回传前 4 字节/或把 TID 当 EPC 返回，读/检测页据本记录补全显示）
                         prefs.edit()
                                 .putString("lastWrittenEpc", usedAsset)
                                 .putString("lastWrittenAsset", asset)
+                                .putString("lastWrittenInvEpc", nz(tag.epc))
                                 .apply();
-                        Log.i(TAG, "EPC_WRITE: 已记录本机写入完整 EPC=" + usedAsset + " asset=" + asset);
+                        Log.i(TAG, "EPC_WRITE: 已记录本机写入完整 EPC=" + usedAsset + " asset=" + asset
+                                + " invEpcAtWrite=" + nz(tag.epc));
                         int wlen = (usedAsset.length() + 1) / 2;
                         String r = sdk.readTagSync(ASSET_BANK, ASSET_START, wlen, PWD, READ_TIMEOUT_MS);
                         if (r == null) {
