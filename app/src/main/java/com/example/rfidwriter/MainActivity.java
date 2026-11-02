@@ -74,6 +74,7 @@ public class MainActivity extends AppCompatActivity {
 
     // A1 标签资产编号写入：固定锁定 A1 标签，仅写 USER 区，严禁误写其他标签或覆盖标定 EPC
     private static final String TARGET_EPC = "E2801191A5040079AE927647"; // C1(右) 固定 EPC（过滤条件，用于精确锁定；物理标签 = C1/右）
+    private static final String C1_ORIENT_PREFIX = "E2801191A5040079AE9276"; // 4 方位标签共享 EPC 前 20hex（仅末字节不同）；用于判定是否存在会误写的兄弟标签
     private static final int A1_FILTER_BANK = 1;          // 以 EPC 区构造过滤
     private static final int A1_FILTER_START_BIT = 32;    // 跳过前 2 字 CRC/PC
     private static final int A1_FILTER_LEN_BITS = 96;     // 12 字 EPC = 96 bit（24 个 hex 字符）
@@ -969,6 +970,47 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
+    /**
+     * 盘点并确认目标 C1 标签在场且可安全读写：
+     * ① C1(EPC=TARGET_EPC) 必须在天线范围内；
+     * ② 天线范围内不得有其它“同前缀”方位标签（A1/B1/D1 等仅末字节不同），否则前缀过滤无法唯一锁定 C1，会误写兄弟标签。
+     * 返回 C1 的 TagInfo（epc=TARGET_EPC）表示可安全锁定；返回 null 时原因见 detectFailReason。
+     */
+    private TagInfo detectTargetC1() {
+        if (inventorying) {
+            detectFailReason = "盘点进行中：请先点「结束盘点」，再使用 C1 读写";
+            return null;
+        }
+        Map<String, Integer> seen = new ConcurrentHashMap<>();
+        CountDownLatch latch = new CountDownLatch(1);
+        sdk.setInventoryMode(1);
+        sdk.startInventory(new RfidSdk.InventoryCallback() {
+            @Override public void onTag(TagInfo t) {
+                if (t.epc != null && !t.epc.isEmpty()) seen.merge(t.epc, 1, Integer::sum);
+            }
+            @Override public void onEnd() { latch.countDown(); }
+        });
+        try { latch.await(INVENTORY_WINDOW_MS, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
+        sdk.stopInventory();
+        Log.i(TAG, "detectTargetC1: 窗口看到 EPC=" + seen.keySet());
+        if (!seen.containsKey(TARGET_EPC)) {
+            detectFailReason = "C1(EPC=" + TARGET_EPC + ") 不在天线范围内；范围内标签=" + seen.keySet();
+            return null;
+        }
+        int sib = 0;
+        for (String e : seen.keySet()) {
+            if (!e.equalsIgnoreCase(TARGET_EPC) && e.toUpperCase().startsWith(C1_ORIENT_PREFIX.toUpperCase())) sib++;
+        }
+        if (sib > 0) {
+            detectFailReason = "天线范围内除 C1 外还有 " + sib + " 张同前缀方位标签(A1/B1/D1…)，前缀过滤无法唯一锁定 C1，"
+                    + "为避免误写其它标签，请只把 C1 放到天线附近、移开其余方位标签";
+            return null;
+        }
+        TagInfo r = new TagInfo();
+        r.epc = TARGET_EPC;
+        return r;
+    }
+
     // ----------------- C1 标签资产编号写入（固定锁定 C1，仅写 USER 区） -----------------
 
     /**
@@ -991,24 +1033,13 @@ public class MainActivity extends AppCompatActivity {
         sdk.setPower(getParam("power", 30));            // 读取保持正常功率
         new Thread(() -> {
             try {
-                // 先盘点探测：确认 C1 在范围内，且探测到的目标就是 C1（防误读/误写其它标签）
-                TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+                // 先盘点探测：确认 C1 在场且无同前缀兄弟方位标签（防误读/误写其它标签）
+                TagInfo tag = detectTargetC1();
                 if (tag == null) {
+                    final String reason = detectFailReason;
                     runOnUiThread(() -> {
-                        if (tvA1Result != null) tvA1Result.setText("失败：天线范围内未检测到标签，请将 C1 放到天线附近");
-                        setStatus("C1 读取失败：未检测到标签");
-                    });
-                    return;
-                }
-                // 硬校验：探测到的标签必须是 C1（EPC 前缀匹配），否则拒绝，避免误读其它标签
-                if (tag.epc == null || !tag.epc.toUpperCase().startsWith(TARGET_EPC.toUpperCase())) {
-                    final String got = tag.epc != null ? tag.epc : "(null)";
-                    runOnUiThread(() -> {
-                        if (tvA1Result != null) tvA1Result.setText(
-                                "失败：探测到的不是 C1。\n实际 EPC=" + got
-                                        + "\n期望 C1=" + TARGET_EPC
-                                        + "\n请只把 C1 标签放到天线附近，移开其它标签");
-                        setStatus("C1 读取失败：探测到非 C1 标签");
+                        if (tvA1Result != null) tvA1Result.setText("失败：" + reason);
+                        setStatus("C1 读取失败：" + reason);
                     });
                     return;
                 }
@@ -1062,13 +1093,10 @@ public class MainActivity extends AppCompatActivity {
         new Thread(() -> {
             String resultMsg;
             try {
-                // 先盘点探测并硬校验：只写 C1，绝不写其它标签
-                TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+                // 先盘点探测并硬校验：只写 C1，且范围内无同前缀兄弟方位标签
+                TagInfo tag = detectTargetC1();
                 if (tag == null) {
-                    resultMsg = "失败：天线范围内未检测到标签，请将 C1 放到天线附近";
-                } else if (tag.epc == null || !tag.epc.toUpperCase().startsWith(TARGET_EPC.toUpperCase())) {
-                    resultMsg = "失败：探测到的不是 C1（实际 EPC=" + (tag.epc != null ? tag.epc : "(null)")
-                            + "），已拒绝写入，避免误写其它标签。请只把 C1 放到天线附近";
+                    resultMsg = "失败：" + detectFailReason;
                 } else {
                     // 用探测到的 C1 构造过滤条件（有 TID 则唯一锁定 C1；否则 EPC 前辍短掩码，需确保仅 C1 在范围内）
                     String[] f = buildFilter(tag);
