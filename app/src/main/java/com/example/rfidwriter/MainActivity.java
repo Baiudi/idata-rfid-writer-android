@@ -100,6 +100,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_WRITE_TEST = "com.example.rfidwriter.action.WRITE_TEST";
     /** 远程真实资产写钩子：am broadcast -a ...WRITE_A1 触发「连(若未连)→检测C1→把 R2|PC00001 写入C1 USER区→回读」，日志前缀 C1_WRITE */
     public static final String ACTION_WRITE_A1 = "com.example.rfidwriter.action.WRITE_A1";
+    /** 远程恢复钩子：am broadcast -a ...RESTORE_EPC 把 C1 的 EPC 恢复为标定值 E2801191A5040079AE927647（仅范围内单标签时执行，用于纠正误写） */
+    public static final String ACTION_RESTORE_EPC = "com.example.rfidwriter.action.RESTORE_EPC";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -118,6 +120,7 @@ public class MainActivity extends AppCompatActivity {
     private TagInfo lastDetectedTag;
     private String detectFailReason = "";   // detectSingleTag 返回 null 时的原因，供 UI 展示
     private boolean mC1Only = false;        // detectTargetC1 探测窗口内是否只有 C1 一张标签（用于允许不过滤写兜底）
+    private int mLastInvCount = 0;          // detectSingleTag 最近一次盘点看到的标签种类数（用于单标签兜底判定）
 
     private volatile boolean writing = false;
     private volatile boolean inventorying = false;
@@ -192,6 +195,7 @@ public class MainActivity extends AppCompatActivity {
                 else if (ACTION_READ_TEST.equals(a)) runReadTest();
                 else if (ACTION_WRITE_TEST.equals(a)) runWriteTest();
                 else if (ACTION_WRITE_A1.equals(a)) writeA1Asset();
+                else if (ACTION_RESTORE_EPC.equals(a)) restoreC1Epc();
             }
         };
         android.content.IntentFilter testFilter = new android.content.IntentFilter();
@@ -199,6 +203,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_READ_TEST);
         testFilter.addAction(ACTION_WRITE_TEST);
         testFilter.addAction(ACTION_WRITE_A1);
+        testFilter.addAction(ACTION_RESTORE_EPC);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
         // Android 9 及以下写公共「下载」目录需要运行时权限；10+ 用 MediaStore 免权限
@@ -870,6 +875,7 @@ public class MainActivity extends AppCompatActivity {
         });
         try { latch.await(windowMs, TimeUnit.MILLISECONDS); } catch (InterruptedException ignored) {}
         sdk.stopInventory();
+        mLastInvCount = seen.size();
         Log.i(TAG, "detectSingleTag: 窗口=" + windowMs + "ms 共看到唯一EPC=" + seen.size() + " " + seen.keySet());
         if (seen.isEmpty()) {
             detectFailReason = "未检测到标签（天线范围内没有可读标签，请确认已点「连接UHF」且标签在天线范围内）";
@@ -1118,15 +1124,27 @@ public class MainActivity extends AppCompatActivity {
                 Log.i(TAG, "C1_WRITE: 开始把资产编号 " + A1_WRITE_PAYLOAD + " 写入 C1 的 USER 区(bank3,word0)");
                 TagInfo tag = detectTargetC1();
                 if (tag == null) {
+                    // 核心未命中（C1 的标定 EPC 可能已被误写）。若范围内【仅一张】标签且用户已确认“仅 C1 在场”，
+                    // 退化为单标签锁定继续写 USER：本设备单读不可用，借助 mC1Only 兜底仅写这一张；
+                    // 且已加固适配器——USER 写绝不会落到 EPC 区，不会进一步误伤标定 EPC。
+                    TagInfo s = detectSingleTag(INVENTORY_WINDOW_MS);
+                    if (s != null && mLastInvCount == 1) {
+                        tag = s;
+                        mC1Only = true;
+                        Log.w(TAG, "C1_WRITE: detectTargetC1 核心未命中（EPC 可能已被误写），但范围内仅一张标签，按单标签锁定继续写 USER");
+                    }
+                }
+                if (tag == null) {
                     resultMsg = "失败：" + detectFailReason;
                 } else {
-                    // 用 detectTargetC1 探测到的【设备实际回报 EPC】构造过滤条件（与已验证成功的 WRITE_TEST 路径一致）：
-                    // buildFilter 在有 TID 时用 TID 唯一锁定，否则用完整 EPC 做 SELECT 掩码，可精确锁定 C1、绝不误写其它标签。
-                    String[] f = buildFilter(tag);
-                    int fBank = Integer.parseInt(f[0]);
-                    int fStartBit = Integer.parseInt(f[1]);
-                    int fLenBits = Integer.parseInt(f[2]);
-                    String fData = f[3];
+                    // C1 探测已通过：用【标定 EPC】做 SELECT 过滤掩码（fBank=1 EPC区, fStartBit=32 跳过CRC/PC, fLenBits=96 完整EPC），
+                    // 精确锁定 C1（绝不误写其它标签），只写 USER 区(bank3,word0)。
+                    // 关键：设备盘点回报的是“加框”EPC(如 5246…0000)，不能直接用做过滤——SELECT 必须匹配标签实际存储的【裸EPC】
+                    // （即标定 EPC=E2801191A5040079AE927647）；用加框串做掩码会导致 SELECT 不匹配、过滤写失败并可能误伤 EPC。
+                    int fBank = A1_FILTER_BANK;                 // 1 = EPC 区
+                    int fStartBit = A1_FILTER_START_BIT;        // 32 = 跳过 CRC/PC
+                    int fLenBits = TARGET_EPC.length() * 4;    // 96 bit = 完整 24hex EPC
+                    String fData = TARGET_EPC;
                     Log.i(TAG, "C1_WRITE: 过滤 fBank=" + fBank + " fStartBit=" + fStartBit
                             + " fLenBits=" + fLenBits + " fData=" + fData + " mC1Only=" + mC1Only);
                     // 仅当探测窗口内确实只有 C1 一张标签时，才允许“过滤写全失败”后降级为不过滤写（避免误写 C59A）
@@ -1168,6 +1186,51 @@ public class MainActivity extends AppCompatActivity {
             runOnUiThread(() -> {
                 if (tvA1Result != null) tvA1Result.setText(msg);
                 setStatus(msg);
+            });
+        }).start();
+    }
+
+    /**
+     * 恢复 C1 标定 EPC：把标签的 EPC 区(bank1)写回标定值 E2801191A5040079AE927647。
+     * 仅在“范围内仅一张标签”时执行（依赖不过滤写兜底，单标签场景下只会命中这一张），用于纠正此前误写。
+     * 这是有意的 EPC 写操作，仅在明确需要恢复时调用（ACTION_RESTORE_EPC 触发）。
+     */
+    private void restoreC1Epc() {
+        if (writing) return;
+        if (inventorying) { Toast.makeText(this, "盘点进行中，请先结束盘点", Toast.LENGTH_LONG).show(); return; }
+        if (!sdk.isConnected()) { Toast.makeText(this, "请先连接 UHF", Toast.LENGTH_SHORT).show(); return; }
+        writing = true;
+        if (btnWriteA1 != null) btnWriteA1.setEnabled(false);
+        setStatus("正在恢复 C1 标定 EPC…");
+        sdk.setPower(Math.min(getParam("power", 30), 20));
+        new Thread(() -> {
+            String msg;
+            try {
+                // 先确认范围内仅一张标签，避免误写其它标签的 EPC（仅当只有 C1 在场才允许不过滤写 EPC）
+                TagInfo t = detectSingleTag(INVENTORY_WINDOW_MS);
+                if (t == null) {
+                    msg = "失败：" + detectFailReason;
+                } else {
+                    // 范围内仅一张：直接把 EPC 恢复为标定值（单标签场景下只会命中这一张）。
+                    // 用原始 hex 直写 EPC 区（不做明文→hex 二次转换，否则会写出错误字节）。
+                    if (sdk instanceof IdataUhfAdapter) {
+                        boolean ok = ((IdataUhfAdapter) sdk).writeEpcRaw(PWD, TARGET_EPC);
+                        msg = ok ? ("成功 ✓ 已将 C1 标定 EPC 恢复为 " + TARGET_EPC)
+                                 : "失败：EPC 恢复未成功（请用原厂写卡器复核，或确认标签 EPC 区可写）";
+                    } else {
+                        msg = "失败：适配器不支持 writeEpcRaw";
+                    }
+                }
+            } catch (Exception e) {
+                msg = "异常：" + e.getMessage();
+            } finally {
+                writing = false;
+                runOnUiThread(() -> { if (btnWriteA1 != null) btnWriteA1.setEnabled(true); });
+            }
+            final String m = msg;
+            runOnUiThread(() -> {
+                if (tvA1Result != null) tvA1Result.setText(m);
+                setStatus(m);
             });
         }).start();
     }

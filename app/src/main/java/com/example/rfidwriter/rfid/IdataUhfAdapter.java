@@ -678,7 +678,8 @@ public class IdataUhfAdapter implements RfidSdk {
             if (mAllowUnfiltered) {
                 Log.w(TAG, "writeViaManager: 所有带过滤写失败，按允许降级为不过滤写 / writeDataToEpc（仅 C1 在场时安全）");
                 if (tryUnfilteredWrite(mc, pwd, writeBank, startWord, dataHex, wordLen, byteLen)) return true;
-                if (tryWriteDataToEpc(mgr, pwd, writeBank, startWord, dataHex)) return true;
+                // writeDataToEpc 只写 EPC 区：仅当本次请求就是写 EPC(writeBank==1) 才允许，避免 USER 写失败时误伤标定 EPC
+                if (writeBank == 1 && tryWriteDataToEpc(mgr, pwd, writeBank, startWord, dataHex)) return true;
             } else {
                 Log.w(TAG, "writeViaManager: 所有带过滤写失败，且未授权不过滤写（防误写其它标签），放弃");
             }
@@ -723,6 +724,34 @@ public class IdataUhfAdapter implements RfidSdk {
 
     /** 业务层在探测确认“范围内只有目标一张标签”时调用，允许过滤写全部失败后降级为不过滤写 */
     public void setAllowUnfilteredWrite(boolean v) { mAllowUnfiltered = v; }
+
+    /**
+     * 用原始 hex 直接写 EPC 区（不做明文→hex 二次转换）。用于恢复标定 EPC。
+     * writeDataToEpc 在不同固件上对两个 int 参数语义不一，这里依次尝试常见组合；任一返回成功即视为写入。
+     * 仅在业务层确认“范围内仅一张标签”时调用，避免误写其它标签。
+     */
+    public boolean writeEpcRaw(String pwd, String epcHex) {
+        if (!mConnected.get()) return false;
+        Object iface = mIface;
+        Object raw = (mRawManager != null) ? mRawManager : mUhf;
+        int[][] argSets = { {1, 0}, {0, 0}, {0, 1}, {1, 1}, {0, 6}, {0, 12} };
+        for (Object obj : new Object[]{iface, raw}) {
+            if (obj == null) continue;
+            Class<?> c = obj.getClass();
+            for (int[] a : argSets) {
+                try {
+                    Method m = c.getMethod("writeDataToEpc", String.class, int.class, int.class, String.class);
+                    Object r = m.invoke(obj, pwd, a[0], a[1], epcHex);
+                    boolean ok = interpretWriteReturn(r);
+                    Log.i(TAG, "writeEpcRaw: writeDataToEpc(" + c.getSimpleName() + ",pwd," + a[0] + "," + a[1] + ",hex)=" + r + " -> ok=" + ok);
+                    if (ok) return true;
+                } catch (Throwable e) {
+                    Log.w(TAG, "writeEpcRaw: writeDataToEpc(" + c.getSimpleName() + "," + a[0] + "," + a[1] + ") 异常", e);
+                }
+            }
+        }
+        return false;
+    }
 
     /** 不过滤写：filterEpc 留空，写当前天线范围内唯一应答的标签（仅在 mAllowUnfiltered 时由 writeViaManager 调用）。
      *  cnt 同时尝试“字数(wordLen)”与“字节数(byteLen)”两种约定，兼容不同固件。 */
@@ -888,6 +917,14 @@ public class IdataUhfAdapter implements RfidSdk {
             String name = (String) c[0][0];
             if (name.equals("writeDataToEpc") && !allowUnfiltered) {
                 Log.d(TAG, "tryIfaceWrites: 跳过无过滤 writeDataToEpc（非 C1 单标签场景）");
+                continue;
+            }
+            // 安全护栏：writeFullEpcTag / writeDataToEpc / writeWholeEpc 只写 EPC 区(bank1)。
+            // 当用户请求写 USER(bank3) / TID(bank2) 时，绝不能调用它们，否则数据会被误写进 EPC、
+            // 覆盖标定 EPC（已发生过 WRITE_TEST 把测试串写进 EPC 的事故）。仅当请求本身就是写 EPC(writeBank==1) 才允许。
+            boolean epcOnly = name.equals("writeFullEpcTag") || name.equals("writeDataToEpc") || name.equals("writeWholeEpc");
+            if (epcOnly && writeBank != 1) {
+                Log.d(TAG, "tryIfaceWrites: 跳过 EPC-only 方法 " + name + "（本次请求写 bank=" + writeBank + "，非 EPC，防误写标定EPC）");
                 continue;
             }
             Class<?>[] types = new Class<?>[c[0].length - 1];
