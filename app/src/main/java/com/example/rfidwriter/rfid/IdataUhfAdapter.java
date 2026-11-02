@@ -148,6 +148,8 @@ public class IdataUhfAdapter implements RfidSdk {
                 Log.i(TAG, "ensureSdk: 路径1 通过 UHFInterface 获取活实例，rawManager=" + (mRawManager != null));
                 logManagerMethods();
                 logIfaceMethods();
+                dumpAllMethods(mIface, "UHFInterface");
+                dumpAllMethods(mRawManager, "UHFManager(raw,内部持有)");
                 return;
             } catch (Throwable e) {
                 Log.w(TAG, "ensureSdk: 路径1(UHFInterface) 失败，回退路径2", e);
@@ -525,19 +527,31 @@ public class IdataUhfAdapter implements RfidSdk {
             String msg = "";
             try {
                 // iUHF 的 readTag(pwd, bank, ptr, cnt, filterEpc, fBank, fPtr, fCnt)
-                // 带过滤：仅对匹配 filterEpc 的那张标签读取，杜绝多标签时误读其他标签
-                Object r = callIface("readTag",
-                        pwd == null ? "" : pwd, bank, wordAddr, wordLen,
-                        filterEpc == null ? "" : filterEpc, fBank, fStartBit, fLenBits);
-                if (r instanceof String && !((String) r).isEmpty()) {
-                    data = (String) r;
-                    ok = true;
-                    Log.i(TAG, "readTag(过滤): ok bank=" + bank + " ptr=" + wordAddr + " len=" + wordLen
-                            + " filterEpc=" + filterEpc + " hex=" + data);
-                } else {
-                    // 过滤读返回空：可能该固件 SELECT+读对短掩码不稳定，退化为不过滤单读
-                    // （业务层已用 detectTargetC1 保证范围内仅目标标签，且会回校 EPC，误读可被捕获）
-                    Log.w(TAG, "readTag(过滤) 返回空，退化尝试不过滤单读 bank=" + bank);
+                // 带过滤：仅对匹配 filterEpc 的那张标签读取，杜绝多标签时误读其他标签。
+                // 参考 writeWholeEpc 用 fStartBit=1 的线索，过滤偏移很可能以“字”为单位，故遍历多种约定。
+                int[][] convs = new int[][]{
+                        {fStartBit, fLenBits},  // 业务层传入（默认 32/96，bit 单位）
+                        {2, 6},                 // word 单位：EPC 数据位于 word2、占 6 字
+                        {0, 96},                // bit 单位、固件自动跳过 CRC+PC
+                        {0, 6},                 // word 单位、从 EPC bank 起点
+                };
+                String epc = filterEpc == null ? "" : filterEpc;
+                for (int[] conv : convs) {
+                    int sb = conv[0], lb = conv[1];
+                    Object r = callIface("readTag",
+                            pwd == null ? "" : pwd, bank, wordAddr, wordLen, epc, fBank, sb, lb);
+                    if (r instanceof String && !((String) r).isEmpty()) {
+                        data = (String) r;
+                        ok = true;
+                        Log.i(TAG, "readTag(过滤 conv sb=" + sb + ",lb=" + lb + "): ok bank=" + bank
+                                + " ptr=" + wordAddr + " len=" + wordLen + " hex=" + data);
+                        break;
+                    }
+                    Log.w(TAG, "readTag(过滤 conv sb=" + sb + ",lb=" + lb + ") 空");
+                }
+                if (!ok) {
+                    // 所有过滤约定都读空：退化为不过滤单读（业务层已用 detectTargetC1 保证范围内仅目标标签）
+                    Log.w(TAG, "readTag(所有过滤约定均空)，退化尝试不过滤单读 bank=" + bank);
                     Object r2 = callIface("readTag",
                             pwd == null ? "" : pwd, bank, wordAddr, wordLen, "", 0, 0, 0);
                     if (r2 instanceof String && !((String) r2).isEmpty()) {
@@ -618,66 +632,54 @@ public class IdataUhfAdapter implements RfidSdk {
         String fPrefix16 = (fData != null && fData.length() >= 16) ? fData.substring(0, 16) : fPrefix; // 64bit 掩码
         String fPrefix20 = (fData != null && fData.length() >= 20) ? fData.substring(0, 20) : fPrefix16; // 80bit 掩码
 
+        // 先探测并设置写模式（部分固件写前需 setWriteMode），再优先尝试厂商 UHFInterface 封装层写方法
+        probeWriteMode();
+        if (tryIfaceWrites(pwd, writeBank, startWord, dataHex, dataBytes, fBank, fStartBit, fLenBits, fData, mAllowUnfiltered)) return true;
+        // 方案 2：先 filterSet(SELECT) 再写（对齐参考 App controlRFIDInventory：filterSet -> 写/读 复用已设 SELECT）
+        if (tryFilterSetThenWrite(pwd, writeBank, startWord, dataHex, wordLen, byteLen, fBank, fData)) return true;
+
         // ---- 第一组：带过滤写（最安全，只写匹配标签）----
-        // 设备实测 UHFManager 真实签名（来自 introspection 日志）：
-        //   boolean writeTag(String pwd, int bank, int ptr, int cnt, String dataHex,
-        //                    int fBank, int fStartBit, int fLenBits, String filterEpc)
-        // 最后 4 个参数为 SELECT 过滤条件。本设备单读/单写“带过滤”此前返回空/失败，故逐一尝试多种掩码长度，
-        // 以适配固件对掩码位数(32/64/80/96)的接受上限；cnt 取字数(主流)。
-        // 候选顺序：完整 EPC(96bit) 掩码优先（最精确锁定 C1），word/byte 两种 cnt 约定各试一次；
-        // 再补 32/64/80bit 前缀掩码（兼容固件对掩码位数的接受上限）。
-        Object[][][] filtered = new Object[][][]{
-                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
-                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fBank, fStartBit, fLenBits, fData}},
-                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 32, fPrefix}},
-                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 64, fPrefix16}},
-                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, 80, fPrefix20}},
-                {{"writeTagWithFilter", int.class, int.class, int.class, String.class, int.class, int.class, String.class, String.class},
-                        new Object[]{fBank, fStartBit, fLenBits, fData, writeBank, startWord, dataHex, pwd}},
-                {{"writeTagWithFilter", int.class, int.class, int.class, byte[].class, int.class, int.class, byte[].class, String.class},
-                        new Object[]{fBank, fStartBit, fLenBits, filterBytes, writeBank, startWord, dataBytes, pwd}},
-        };
+        // 设备实测 UHFManager 真实签名：writeTag(String pwd,int bank,int ptr,int cnt,String dataHex,
+        //              int fBank,int fStartBit,int fLenBits,String filterEpc)
+        // 最后 4 个参数为 SELECT 过滤条件。参考 iUHF 源码 writeWholeEpc 用 fStartBit=1、fLenBits=字数(含 PC)，
+        // 强烈提示本固件过滤偏移以“字(word)”而非“位(bit)”为单位。故同时尝试 bit 单位(32/96) 与 word 单位(2/6) 等多种约定，
+        // cnt 同时取字数(wordLen)与字节数(byteLen)。命中任一即视为写入成功。
         boolean triedFiltered = false;
-        for (Object[][] c : filtered) {
-            String name = (String) c[0][0];
-            Class<?>[] types = new Class<?>[c[0].length - 1];
-            for (int i = 1; i < c[0].length; i++) types[i - 1] = (Class<?>) c[0][i];
-            Object[] args = (Object[]) c[1];
-            try {
-                Method m = mc.getMethod(name, types);
-                triedFiltered = true;
-                Log.i(TAG, "writeViaManager: 命中过滤写方法 " + m.toString());
-                Log.i(TAG, "writeViaManager: 尝试 " + name + " 参=" + java.util.Arrays.toString(args));
-                Object r = m.invoke(mgr, args);
-                boolean ok = interpretWriteReturn(r);
-                Log.i(TAG, "writeViaManager: " + name + " 返回=" + r + " -> ok=" + ok);
-                if (ok) return true;
-                Log.w(TAG, "writeViaManager: 过滤写返回未指示成功，继续尝试同组其它候选");
-            } catch (NoSuchMethodException e) {
-                Log.d(TAG, "writeViaManager: 管理器无 " + name + "(" + types.length + "参) 方法，跳过");
-            } catch (Throwable e) {
-                Log.w(TAG, "writeViaManager: 调用过滤写 " + name + " 异常", e);
+        int[][] convs = new int[][]{
+                {fStartBit, fLenBits},   // 业务层传入（默认 32/96，bit 单位）
+                {2, 6},                  // word 单位：EPC 数据位于 word2、占 6 字(12字节)
+                {0, 96},                 // bit 单位、固件自动跳过 CRC+PC
+                {0, 6},                  // word 单位、从 EPC bank 起点
+                {1, 7},                  // word 单位、含 PC（对齐 writeWholeEpc）
+        };
+        for (int[] conv : convs) {
+            int sb = conv[0], lb = conv[1];
+            for (int cnt : new int[]{wordLen, byteLen}) {
+                try {
+                    Method m = mc.getMethod("writeTag", String.class, int.class, int.class, int.class,
+                            String.class, int.class, int.class, int.class, String.class);
+                    triedFiltered = true;
+                    Log.i(TAG, "writeViaManager: 尝试 过滤写 writeTag conv(sb=" + sb + ",lb=" + lb + ") cnt=" + cnt);
+                    Object r = m.invoke(mgr, pwd, writeBank, startWord, cnt, dataHex, fBank, sb, lb, fData);
+                    boolean ok = interpretWriteReturn(r);
+                    Log.i(TAG, "writeViaManager: 过滤写 conv(sb=" + sb + ",lb=" + lb + ") cnt=" + cnt + " 返回=" + r + " -> ok=" + ok);
+                    if (ok) return true;
+                } catch (Throwable e) {
+                    Log.w(TAG, "writeViaManager: 过滤写 conv(sb=" + sb + ",lb=" + lb + ") 异常", e);
+                }
             }
         }
         if (triedFiltered) {
-            // 厂商 UHFInterface 自带“写后读”方法（自带 SELECT，仅锁定 C1，最可靠），优先尝试
-            if (tryIfaceCombinedWrite(pwd, writeBank, startWord, dataHex, dataBytes, fBank, fStartBit, fLenBits, fData)) return true;
-            // 过滤写方法存在但均返回失败：仅当业务层确认“范围内只有 C1 一张标签”时，
-            // 才降级为不过滤写 / writeDataToEpc（写当前唯一应答的标签，即 C1），避免误写 C59A 等其它标签。
+            // 过滤写方法存在但均失败：仅当业务层确认“范围内只有 C1 一张标签”时，才降级为不过滤写 / writeDataToEpc
             if (mAllowUnfiltered) {
-                Log.w(TAG, "writeViaManager: 过滤写均失败，按允许降级为不过滤写 / writeDataToEpc（仅 C1 在场时安全）");
+                Log.w(TAG, "writeViaManager: 所有带过滤写失败，按允许降级为不过滤写 / writeDataToEpc（仅 C1 在场时安全）");
                 if (tryUnfilteredWrite(mc, pwd, writeBank, startWord, dataHex, wordLen, byteLen)) return true;
                 if (tryWriteDataToEpc(mgr, pwd, writeBank, startWord, dataHex)) return true;
             } else {
-                Log.w(TAG, "writeViaManager: 过滤写均失败，且未授权不过滤写（防误写其它标签），放弃");
+                Log.w(TAG, "writeViaManager: 所有带过滤写失败，且未授权不过滤写（防误写其它标签），放弃");
             }
             logManagerMethods();
-            logIfaceMethods();
+            dumpAllMethods(mgr, "UHFManager(写失败诊断)");
             return false;
         }
 
@@ -827,48 +829,137 @@ public class IdataUhfAdapter implements RfidSdk {
         Log.i(TAG, sb.toString());
     }
 
+    /** 诊断：完整 dump 某个对象类上的【全部】公开方法（含 select/filter/init/set*），用于发现未尝试过的正确 API */
+    private void dumpAllMethods(Object obj, String label) {
+        if (obj == null) { Log.w(TAG, "dumpAllMethods: " + label + " 为 null，跳过"); return; }
+        Class<?> c = obj.getClass();
+        StringBuilder sb = new StringBuilder("【ALL_METHODS】").append(label)
+                .append(" class=").append(c.getName()).append(" (").append(c.getMethods().length).append(" methods):");
+        // 按方法名排序，便于阅读
+        java.util.List<Method> ms = new java.util.ArrayList<>(java.util.Arrays.asList(c.getMethods()));
+        ms.sort((a, b) -> a.getName().compareTo(b.getName()));
+        for (Method m : ms) sb.append("\n  ").append(m.toString());
+        Log.i(TAG, sb.toString());
+        // 同时 dump 声明字段（可能持有其它可写管理器）
+        StringBuilder fs = new StringBuilder("【FIELDS】").append(label).append(" class=").append(c.getName()).append(":");
+        for (Field fld : c.getDeclaredFields()) fs.append("\n  ").append(fld.getType().getName()).append(" ").append(fld.getName());
+        Log.i(TAG, fs.toString());
+    }
+
     /**
-     * 尝试调用厂商 UHFInterface 自带的“写后读”组合方法 WriteTagDataAndReadTagData。
-     * 该方法在 dex 封装层内部完成 SELECT + 写 + 读回，比直接驱动固件 UHFManager.writeTag 更可靠；
-     * 它自带过滤参数，只会命中 C1（EPC 精确匹配），不会误写其它标签。
-     * 由于其签名未知，逐候选尝试多种参数组合（字数/字节数 cnt、hex/byte 数据）。
+     * 尝试调用厂商 UHFInterface 封装层自带的写方法（writeTag / writeFullEpcTag / writeDataToEpc，
+     * 以及 WriteTagDataAndReadTagData）。这些封装方法内部会做正确的 SELECT / 写模式等设置，
+     * 比我们直接反射驱动固件 UHFManager.writeTag 更可靠（固件层直写此前一律返回 false）。
+     * 带过滤的候选只会命中 C1（EPC 精确匹配），不会误写其它标签；writeDataToEpc 无过滤，
+     * 仅在 allowUnfiltered（范围内仅 C1 一张）时调用以防误写。
      */
-    private boolean tryIfaceCombinedWrite(String pwd, int writeBank, int startWord,
-                                         String dataHex, byte[] dataBytes,
-                                         int fBank, int fStartBit, int fLenBits, String fData) {
-        if (mIface == null) { Log.w(TAG, "writeViaManager: 无 UHFInterface，跳过 WriteTagDataAndReadTagData"); return false; }
+    private boolean tryIfaceWrites(String pwd, int writeBank, int startWord,
+                                   String dataHex, byte[] dataBytes,
+                                   int fBank, int fStartBit, int fLenBits, String fData, boolean allowUnfiltered) {
+        if (mIface == null) { Log.w(TAG, "tryIfaceWrites: 无 UHFInterface，跳过封装层写方法"); return false; }
         Class<?> ic = mIface.getClass();
         int wordLen = (dataBytes.length + 1) / 2;
         int byteLen = dataBytes.length;
-        // 候选签名：以固件 writeTag 9 参为蓝本，返值可能是 String(读回数据) 或 boolean
         Object[][][] cands = new Object[][][]{
+                // 1) writeTag 9参（自带 SELECT 过滤，锁定 C1）
+                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
+                {{"writeTag", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fBank, fStartBit, fLenBits, fData}},
+                // 2) writeFullEpcTag 6参（pwd,bank,ptr,cnt,dataHex,filterEpc）自带过滤
+                {{"writeFullEpcTag", String.class, int.class, int.class, int.class, String.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fData}},
+                {{"writeFullEpcTag", String.class, int.class, int.class, int.class, String.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fData}},
+                // 3) writeDataToEpc（无过滤，仅允许 C1 单标签时调用）
+                {{"writeDataToEpc", String.class, int.class, int.class, String.class},
+                        new Object[]{pwd, writeBank, startWord, dataHex}},
+                // 4) WriteTagDataAndReadTagData（自带 SELECT+写+读回；部分固件 UHFManager 无此方法会抛异常，忽略）
                 {{"WriteTagDataAndReadTagData", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
                         new Object[]{pwd, writeBank, startWord, wordLen, dataHex, fBank, fStartBit, fLenBits, fData}},
-                {{"WriteTagDataAndReadTagData", String.class, int.class, int.class, int.class, String.class, int.class, int.class, int.class, String.class},
-                        new Object[]{pwd, writeBank, startWord, byteLen, dataHex, fBank, fStartBit, fLenBits, fData}},
-                {{"WriteTagDataAndReadTagData", String.class, int.class, int.class, byte[].class, int.class, int.class, int.class, byte[].class},
-                        new Object[]{pwd, writeBank, startWord, dataBytes, fBank, fStartBit, fLenBits, hexToBytes(fData)}},
         };
         for (Object[][] c : cands) {
             String name = (String) c[0][0];
+            if (name.equals("writeDataToEpc") && !allowUnfiltered) {
+                Log.d(TAG, "tryIfaceWrites: 跳过无过滤 writeDataToEpc（非 C1 单标签场景）");
+                continue;
+            }
             Class<?>[] types = new Class<?>[c[0].length - 1];
             for (int i = 1; i < c[0].length; i++) types[i - 1] = (Class<?>) c[0][i];
             Object[] args = (Object[]) c[1];
             try {
                 Method m = ic.getMethod(name, types);
-                Log.i(TAG, "writeViaManager: 尝试 " + name + "(UHFInterface) 参=" + java.util.Arrays.toString(args));
+                Log.i(TAG, "tryIfaceWrites: 尝试 " + name + "(UHFInterface) 参=" + java.util.Arrays.toString(args));
                 Object r = m.invoke(mIface, args);
                 boolean ok = interpretWriteReturn(r);
-                Log.i(TAG, "writeViaManager: " + name + "(UHFInterface) 返回=" + r + " -> ok=" + ok);
+                Log.i(TAG, "tryIfaceWrites: " + name + "(UHFInterface) 返回=" + r + " -> ok=" + ok);
                 if (ok) return true;
-                Log.w(TAG, "writeViaManager: " + name + "(UHFInterface) 未指示成功，继续候选");
+                Log.w(TAG, "tryIfaceWrites: " + name + "(UHFInterface) 未指示成功，继续候选");
+            } catch (NoSuchMethodError e) {
+                Log.d(TAG, "tryIfaceWrites: UHFInterface." + name + " 内部调用了固件缺失方法（固件不匹配），忽略");
             } catch (NoSuchMethodException e) {
-                Log.d(TAG, "writeViaManager: UHFInterface 无 " + name + "(" + types.length + "参) 方法，跳过");
+                Log.d(TAG, "tryIfaceWrites: UHFInterface 无 " + name + "(" + types.length + "参) 方法，跳过");
+            } catch (InvocationTargetException e) {
+                Log.w(TAG, "tryIfaceWrites: " + name + "(UHFInterface) 内部异常（固件不匹配），忽略", e.getCause());
             } catch (Throwable e) {
-                Log.w(TAG, "writeViaManager: " + name + "(UHFInterface) 异常", e);
+                Log.w(TAG, "tryIfaceWrites: " + name + "(UHFInterface) 异常", e);
             }
         }
         return false;
+    }
+
+    /**
+     * 方案 2：先 filterSet(SELECT) 再写。对齐参考 App 的 controlRFIDInventory 做法：
+     * 它先 filterSet(fBank,fStartBit,fLenBits,epc,flag) 设定 SELECT，随后写/读复用该已设 SELECT。
+     * filterSet 内部调用固件 inventoryFilterData(...)。这里对每种过滤约定先设 SELECT，再调用
+     * UHFInterface.writeTag（空过滤，依赖已设 SELECT）写入，命中任一即成功。只锁定 C1，不会误写其它标签。
+     */
+    private boolean tryFilterSetThenWrite(String pwd, int writeBank, int startWord, String dataHex,
+                                         int wordLen, int byteLen, int fBank, String fData) {
+        if (mIface == null) { Log.w(TAG, "tryFilterSetThenWrite: 无 UHFInterface，跳过"); return false; }
+        Class<?> ic = mIface.getClass();
+        Method filterSet;
+        try {
+            filterSet = ic.getMethod("filterSet", int.class, int.class, int.class, String.class, int.class);
+        } catch (NoSuchMethodException e) {
+            Log.d(TAG, "tryFilterSetThenWrite: UHFInterface 无 filterSet 方法，跳过");
+            return false;
+        }
+        int[][] convs = new int[][]{
+                {fStartBit, fLenBits}, {2, 6}, {0, 96}, {0, 6},
+        };
+        for (int[] conv : convs) {
+            int sb = conv[0], lb = conv[1];
+            try {
+                Object fr = filterSet.invoke(mIface, fBank, sb, lb, fData, 0);
+                Log.i(TAG, "tryFilterSetThenWrite: filterSet(sb=" + sb + ",lb=" + lb + ")=" + fr);
+                for (int cnt : new int[]{wordLen, byteLen}) {
+                    Method wt = ic.getMethod("writeTag", String.class, int.class, int.class, int.class,
+                            String.class, int.class, int.class, int.class, String.class);
+                    Object r = wt.invoke(mIface, pwd, writeBank, startWord, cnt, dataHex, 0, 0, 0, "");
+                    boolean ok = interpretWriteReturn(r);
+                    Log.i(TAG, "tryFilterSetThenWrite: conv(sb=" + sb + ",lb=" + lb + ") cnt=" + cnt + " 写返回=" + r + " -> ok=" + ok);
+                    if (ok) return true;
+                }
+            } catch (Throwable e) {
+                Log.w(TAG, "tryFilterSetThenWrite: conv(sb=" + sb + ",lb=" + lb + ") 异常", e);
+            }
+        }
+        return false;
+    }
+
+    /** 探测并设置写模式（部分固件写前需 setWriteMode）；记录结果供诊断，不阻塞写流程 */
+    private void probeWriteMode() {
+        for (Object obj : new Object[]{mIface, mRawManager != null ? mRawManager : mUhf}) {
+            if (obj == null) continue;
+            for (int mode : new int[]{0, 1}) {
+                try {
+                    Method m = obj.getClass().getMethod("setWriteMode", int.class);
+                    Object r = m.invoke(obj, mode);
+                    Log.i(TAG, "probeWriteMode: " + obj.getClass().getSimpleName() + ".setWriteMode(" + mode + ")=" + r);
+                } catch (Throwable ignored) {}
+            }
+        }
     }
 
     @Override
