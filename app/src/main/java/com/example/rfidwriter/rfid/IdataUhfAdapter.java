@@ -378,7 +378,6 @@ public class IdataUhfAdapter implements RfidSdk {
         }
     }
 
-    @Override
     /** 让盘点额外回传 EPC 区(bank1,word2 起,6 字=12 字节) 完整数据，使读/检测界面显示完整资产号。
      * 直接对 UHFManager 实例(mRawManager 优先 / mUhf 兜底) 反射调用 inventoryTagBankSet ——
      * 该方法只存在于 UHFManager，UHFInterface 上没有，故不能走 callIface。
@@ -395,6 +394,7 @@ public class IdataUhfAdapter implements RfidSdk {
         }
     }
 
+    @Override
     public void setInventoryMode(int mode) {
         if (!mConnected.get()) return;
         try {
