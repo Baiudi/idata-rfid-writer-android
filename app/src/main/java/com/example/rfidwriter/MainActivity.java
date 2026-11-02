@@ -109,6 +109,8 @@ public class MainActivity extends AppCompatActivity {
     public static final String ACTION_WRITE_EPC = "com.example.rfidwriter.action.WRITE_EPC";
     /** 远程 UI 读钩子：am broadcast -a ...READ_UI 触发「连(若未连)→检测单张→读TID/EPC/USER 并据本机写入记录补全EPC」，更新读卡页 TextView，日志前缀 READ_UI_RECON */
     public static final String ACTION_READ_UI = "com.example.rfidwriter.action.READ_UI";
+    /** 远程“写带结构化信息”钩子：am broadcast -a ...WRITE_FULL 用 extra(asset,assetName,dept,location,owner,model,remark...) 写 EPC+USER 结构化信息，并记录到本机供读取补全，日志前缀 FULL_WRITE */
+    public static final String ACTION_WRITE_FULL = "com.example.rfidwriter.action.WRITE_FULL";
     private BroadcastReceiver mTestReceiver;
     private ResultDbHelper db;
     private final List<WriteResult> ledger = new ArrayList<>();
@@ -207,6 +209,30 @@ public class MainActivity extends AppCompatActivity {
                     String asset = i.getStringExtra("asset");
                     writeEpcAsset(asset != null && !asset.isEmpty() ? asset : "PC00001");
                 }
+                else if (ACTION_WRITE_FULL.equals(a)) {
+                    // 写“资产编号 + 存放位置 + 部门 + 使用人…”结构化信息，并记录到本机供读取补全
+                    WriteResult wr = new WriteResult();
+                    wr.assetNo = nz(i.getStringExtra("asset"));
+                    wr.assetName = nz(i.getStringExtra("assetName"));
+                    wr.dept = nz(i.getStringExtra("dept"));
+                    wr.location = nz(i.getStringExtra("location"));
+                    wr.owner = nz(i.getStringExtra("owner"));
+                    wr.model = nz(i.getStringExtra("model"));
+                    wr.category = nz(i.getStringExtra("category"));
+                    wr.purchaseDate = nz(i.getStringExtra("purchaseDate"));
+                    wr.purchasePrice = nz(i.getStringExtra("purchasePrice"));
+                    wr.remark = nz(i.getStringExtra("remark"));
+                    if (wr.assetNo.isEmpty()) wr.assetNo = "PC00001";
+                    Log.i(TAG, "FULL_WRITE: 收到写请求 assetNo=" + wr.assetNo + " dept=" + wr.dept + " location=" + wr.location + " owner=" + wr.owner);
+                    if (!sdk.isConnected()) connect();
+                    uiHandler.postDelayed(() -> {
+                        new Thread(() -> {
+                            TagInfo tag = detectSingleTag(INVENTORY_WINDOW_MS);
+                            if (tag == null) { Log.w(TAG, "FULL_WRITE: 未检测到唯一单张标签，放弃"); return; }
+                            writeOneTagDual(tag, wr, getParam("bank", 3), getParam("startWord", 0));
+                        }).start();
+                    }, sdk.isConnected() ? 200 : 3200);
+                }
                 else if (ACTION_READ_UI.equals(a)) {
                     if (sdk.isConnected()) readFullTag();
                     else { connect(); uiHandler.postDelayed(() -> readFullTag(), 3000); }
@@ -220,6 +246,7 @@ public class MainActivity extends AppCompatActivity {
         testFilter.addAction(ACTION_WRITE_A1);
         testFilter.addAction(ACTION_RESTORE_EPC);
         testFilter.addAction(ACTION_WRITE_EPC);
+        testFilter.addAction(ACTION_WRITE_FULL);
         testFilter.addAction(ACTION_READ_UI);
         registerReceiver(mTestReceiver, testFilter, android.content.Context.RECEIVER_EXPORTED);
 
@@ -436,6 +463,51 @@ public class MainActivity extends AppCompatActivity {
         String invAsc = FormatUtil.hexToAscii(inv);
         if (invAsc != null && rec.startsWith(invAsc)) return rec;
         return null;
+    }
+
+    /**
+     * 写卡成功（EPC 已落标）后，把本条结构化信息（资产编号/名称/部门/使用人/存放位置/…）持久化到 prefs。
+     * 因 iData T1U 固件仅支持写 EPC 区、USER 区写与单读均不可用，读取页只能“据本机写入记录”把这些信息补全展示。
+     */
+    private void recordWrittenInfo(WriteResult item) {
+        if (item == null) return;
+        prefs.edit()
+                .putString("info_assetNo", nz(item.assetNo))
+                .putString("info_assetName", nz(item.assetName))
+                .putString("info_model", nz(item.model))
+                .putString("info_category", nz(item.category))
+                .putString("info_purchaseDate", nz(item.purchaseDate))
+                .putString("info_purchasePrice", nz(item.purchasePrice))
+                .putString("info_dept", nz(item.dept))
+                .putString("info_owner", nz(item.owner))
+                .putString("info_location", nz(item.location))
+                .putString("info_remark", nz(item.remark))
+                .apply();
+        Log.i(TAG, "recordWrittenInfo: 已记录结构化信息 assetNo=" + nz(item.assetNo)
+                + " dept=" + nz(item.dept) + " location=" + nz(item.location)
+                + " owner=" + nz(item.owner));
+    }
+
+    /** 取回“本机写入记录”里的结构化信息，格式化为【字段名：值】多行串；无任何记录返回空串 */
+    private String getRecordedInfoBlock() {
+        String[][] fields = {
+                {"资产编号", "info_assetNo"},
+                {"资产名称", "info_assetName"},
+                {"规格型号", "info_model"},
+                {"资产分类", "info_category"},
+                {"购置日期", "info_purchaseDate"},
+                {"购置价格", "info_purchasePrice"},
+                {"使用部门", "info_dept"},
+                {"使用人", "info_owner"},
+                {"存放位置", "info_location"},
+                {"备注", "info_remark"},
+        };
+        StringBuilder sb = new StringBuilder();
+        for (String[] kv : fields) {
+            String v = prefs.getString(kv[1], "");
+            if (v != null && !v.isEmpty()) sb.append("\n  ").append(kv[0]).append("：").append(v);
+        }
+        return sb.length() == 0 ? "" : sb.toString();
     }
 
     /** ASCII 字符串转其字节对应的 hex（如 "PC00" -> "504300"）；非法返回 null */
@@ -889,6 +961,7 @@ public class MainActivity extends AppCompatActivity {
                 .apply();
         Log.i(TAG, "writeOneTagDual: 已记录本机写入完整 EPC=" + usedAsset + " asset=" + item.assetNo
                 + " invEpcAtWrite=" + nz(tag.epc));
+        recordWrittenInfo(item);   // 同步记录结构化信息（存放位置/部门/使用人…），供读取页据本机记录补全展示
         int assetWordLen = (usedAsset.length() + 1) / 2;
         String rEpc = sdk.readTagSync(ASSET_BANK, ASSET_START, assetWordLen, PWD, READ_TIMEOUT_MS);
         boolean epcV = rEpc != null && FormatUtil.hexToAscii(rEpc).trim().equals(usedAsset);
@@ -1030,6 +1103,12 @@ public class MainActivity extends AppCompatActivity {
                         if (!recAsset.isEmpty()) sb.append("   资产编号: ").append(recAsset);
                         sb.append("\n  ↳ 盘点仅回传前缀 ").append(dEpc)
                                 .append("，完整值据本机写入记录补全；请用专用读卡器复核");
+                        // 一并补全本机写入记录里的结构化信息（存放位置/部门/使用人…）
+                        String infoBlock = getRecordedInfoBlock();
+                        if (!infoBlock.isEmpty()) {
+                            sb.append("\n本机写入记录（USER 区本设备不可读，据本机记录补全；请用专用读卡器复核）:")
+                                    .append(infoBlock);
+                        }
                     }
                     if (tag.tid != null && !tag.tid.isEmpty()) sb.append("  TID=").append(tag.tid);
                     if (!detectFailReason.isEmpty()) sb.append("\n(").append(detectFailReason).append(")");
@@ -1080,6 +1159,8 @@ public class MainActivity extends AppCompatActivity {
                           + (recAsset.isEmpty() ? "" : "  资产编号:" + recAsset)
                           + "\n  ↳ 盘点仅回传前缀 " + epcHex + "，据本机写入记录补全；请用专用读卡器复核"
                         : "";
+                // 本机写入记录里的结构化信息（存放位置/部门/使用人…）；仅当本次读到的标签匹配到本机写入记录时才补全
+                String infoBlock = showFull ? getRecordedInfoBlock() : "";
                 StringBuilder disp = new StringBuilder();
                 disp.append("EPC  : ").append(epcHex)
                         .append(epcAscii.isEmpty() ? "" : "  (" + epcAscii + ")");
@@ -1089,9 +1170,16 @@ public class MainActivity extends AppCompatActivity {
                     disp.append("\n  ↳ 盘点仅回传前缀 ").append(epcHex)
                             .append("，完整值据本机写入记录补全；请用专用读卡器复核");
                 }
-                disp.append("\nTID  : （单读中…）\nUSER : （单读中…）");
+                if (showFull && !infoBlock.isEmpty()) {
+                    // USER 区本设备不可读，结构化信息据本机写入记录补全展示
+                    disp.append("\nUSER : （本机写入记录补全；USER 区本设备不可读，请用专用读卡器复核）")
+                            .append(infoBlock);
+                } else {
+                    disp.append("\nTID  : （单读中…）\nUSER : （单读中…）");
+                }
                 final String epcHexF = epcHex, epcAsciiF = epcAscii, fullEpcF = fullEpc, recAssetF = recAsset;
                 final boolean showFullF = showFull;
+                final String infoBlockF = infoBlock;
                 runOnUiThread(() -> {
                     if (tvDetected != null)
                         tvDetected.setText("检测到的标签：EPC=" + epcHexF
@@ -1103,8 +1191,12 @@ public class MainActivity extends AppCompatActivity {
                             ? fullEpcF + "\n(盘点回传: " + epcHexF + " " + epcAsciiF + ")"
                             : epcHexF + (epcAsciiF.isEmpty() ? "" : "\n(" + epcAsciiF + ")"));
                     if (tvTid != null) tvTid.setText("（单读中…）");
-                    if (tvUser != null) tvUser.setText("（单读中…）");
-                    setStatus("已读取（资产号据本机记录即时补全；后台单读 TID/USER 中…）");
+                    if (tvUser != null) tvUser.setText(showFullF && !infoBlockF.isEmpty()
+                            ? "（本机写入记录补全；USER 区本设备不可读，请用专用读卡器复核）" + infoBlockF
+                            : "（单读中…）");
+                    setStatus(showFullF && !infoBlockF.isEmpty()
+                            ? "已读取（资产号与存放/部门等信息据本机记录即时补全；后台单读 TID/USER 中…）"
+                            : "已读取（资产号据本机记录即时补全；后台单读 TID/USER 中…）");
                 });
                 // ===== 后台单读 TID/USER：用短超时，不阻塞上面的即时显示 =====
                 new Thread(() -> {
@@ -1127,11 +1219,12 @@ public class MainActivity extends AppCompatActivity {
                         final String tidF = nz(tid), userF = nz(user), userUtf8F = userUtf8;
                         runOnUiThread(() -> {
                             if (tvTid != null) tvTid.setText(tidF.isEmpty() ? "（单读不可用，请用专用读卡器）" : tidF);
-                            if (tvUser != null) tvUser.setText(userF.isEmpty() ? "（单读不可用，请用专用读卡器）" : userF + (userUtf8F.isEmpty() ? "" : "\nUSER(解析): " + userUtf8F));
+                            // showFull 时 USER 卡片已显示本机记录的结构化信息，单读结果不覆盖；仅未命中时才用单读结果
+                            if (tvUser != null && !showFullF) tvUser.setText(userF.isEmpty() ? "（单读不可用，请用专用读卡器）" : userF + (userUtf8F.isEmpty() ? "" : "\nUSER(解析): " + userUtf8F));
                             if (tvReadData != null) {
                                 String cur = tvReadData.getText() != null ? tvReadData.getText().toString() : "";
-                                cur = cur.replace("TID  : （单读中…）", "TID  : " + tidF)
-                                         .replace("USER : （单读中…）", "USER : " + userF + (userUtf8F.isEmpty() ? "" : "\nUSER(解析): " + userUtf8F));
+                                cur = cur.replace("TID  : （单读中…）", "TID  : " + tidF);
+                                if (!showFullF) cur = cur.replace("USER : （单读中…）", "USER : " + userF + (userUtf8F.isEmpty() ? "" : "\nUSER(解析): " + userUtf8F));
                                 tvReadData.setText(cur);
                             }
                             setStatus("读取完成（资产号已据本机记录补全"
