@@ -144,6 +144,7 @@ public class IdataUhfAdapter implements RfidSdk {
                 }
                 mBindPath = "UHFInterface";
                 Log.i(TAG, "ensureSdk: 路径1 通过 UHFInterface 获取活实例，rawManager=" + (mRawManager != null));
+                logManagerMethods();
                 return;
             } catch (Throwable e) {
                 Log.w(TAG, "ensureSdk: 路径1(UHFInterface) 失败，回退路径2", e);
@@ -163,6 +164,7 @@ public class IdataUhfAdapter implements RfidSdk {
             mUhfClass = svc.getClass();
             mBindPath = "getSystemService";
             Log.i(TAG, "ensureSdk: 路径2 通过系统服务获取 UHFManager，class=" + mUhfClass.getName());
+            logManagerMethods();
             return;
         }
 
@@ -530,7 +532,19 @@ public class IdataUhfAdapter implements RfidSdk {
                     Log.i(TAG, "readTag(过滤): ok bank=" + bank + " ptr=" + wordAddr + " len=" + wordLen
                             + " filterEpc=" + filterEpc + " hex=" + data);
                 } else {
-                    msg = "读取为空（未读到匹配标签，请确认过滤条件与天线范围内标签一致）";
+                    // 过滤读返回空：可能该固件 SELECT+读对短掩码不稳定，退化为不过滤单读
+                    // （业务层已用 detectTargetC1 保证范围内仅目标标签，且会回校 EPC，误读可被捕获）
+                    Log.w(TAG, "readTag(过滤) 返回空，退化尝试不过滤单读 bank=" + bank);
+                    Object r2 = callIface("readTag",
+                            pwd == null ? "" : pwd, bank, wordAddr, wordLen, "", 0, 0, 0);
+                    if (r2 instanceof String && !((String) r2).isEmpty()) {
+                        data = (String) r2;
+                        ok = true;
+                        Log.i(TAG, "readTag(不过滤): ok bank=" + bank + " ptr=" + wordAddr
+                                + " len=" + wordLen + " hex=" + data);
+                    } else {
+                        msg = "读取为空（未读到匹配标签，请确认天线范围内有标签且过滤条件一致）";
+                    }
                 }
             } catch (Throwable e) {
                 msg = "读取异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
@@ -555,23 +569,23 @@ public class IdataUhfAdapter implements RfidSdk {
             boolean ok = false;
             String msg = "";
             try {
-                // 业务层传入的是明文(ASCII/UTF-8)，SDK 入参为 hex 字符串，这里转换。
-                byte[] b = writeData.getBytes(StandardCharsets.UTF_8);
-                if (b.length % 2 != 0) {                  // 凑成整字节
-                    byte[] p = new byte[b.length + 1];
-                    System.arraycopy(b, 0, p, 0, b.length);
-                    b = p;
+                // 写入目标必须是设备固件实际存在的写方法。UHFInterface.WriteTagDataAndReadTagData 在
+                // 本设备固件(iUHF 预装)上并不存在（NoSuchMethodError 崩溃），因此必须直接驱动
+                // 内部持有的 com.idata.UHFManager 活实例(mRawManager)上真实编译进固件的写方法。
+                Object mgr = (mRawManager != null) ? mRawManager : mUhf;
+                if (mgr == null) {
+                    msg = "写入未执行：未持有 UHFManager 活实例（请先连接 UHF）";
+                    Log.e(TAG, "writeTagWithFilter: mRawManager 与 mUhf 均为 null，无法写");
+                } else {
+                    byte[] dataBytes = writeData.getBytes(StandardCharsets.UTF_8);
+                    String dataHex = toHex(dataBytes);   // 业务层传明文，SDK 入参为 hex
+                    boolean wrote = writeViaManager(mgr,
+                            fBank, fStartBit, fLenBits, fData,
+                            writeBank, startWord, dataBytes, dataHex,
+                            pwd == null ? "" : pwd);
+                    ok = wrote;
+                    msg = ok ? "写入成功" : "写入失败（未匹配到目标标签，或写入超时；请确认天线范围内仅目标标签且无同前缀兄弟标签）";
                 }
-                String hex = toHex(b);
-                int cnt = b.length / 2;                  // 字数 = 字节数 / 2
-
-                // iUHF 写标签走 UHFInterface.WriteTagDataAndReadTagData（写后回读，返回 Bundle），
-                // 其底层 this.uhfManager.WriteTagDataAndReadTagData(...) 即系统服务暴露的 AIDL 方法。
-                Object r = callIface("WriteTagDataAndReadTagData",
-                                pwd == null ? "" : pwd, writeBank, startWord, cnt, hex,
-                                fBank, fStartBit, fLenBits, fData == null ? "" : fData);
-                ok = interpretWriteBundle(r);
-                msg = ok ? "写入成功" : "写入失败（请确认天线范围内仅一张标签，且未被其它标签干扰）";
             } catch (Throwable e) {
                 msg = "写入异常：" + e.getClass().getSimpleName() + " " + e.getMessage();
                 Log.e(TAG, "writeTagWithFilter failed", e);
@@ -582,18 +596,108 @@ public class IdataUhfAdapter implements RfidSdk {
         }).start();
     }
 
-    /** 解释 WriteTagDataAndReadTagData 返回的 Bundle：以 "result" 布尔为主，缺省时看 "data" 是否存在 */
-    private boolean interpretWriteBundle(Object r) {
-        if (!(r instanceof Bundle)) {
-            Log.w(TAG, "write bundle 非 Bundle: " + (r == null ? "null" : r.getClass().getName()));
+    /**
+     * 直接驱动设备固件真实存在的 UHFManager 写方法（绕过 bundled dex 中固件没有的 WriteTagDataAndReadTagData）。
+     * 优先尝试“带过滤写”（保证只写匹配标签，绝不误写其它标签）；只有管理器确实没有过滤写方法时，
+     * 才退回到普通 writeTag（此时必须由业务层 gate 保证范围内仅一张标签）。
+     *
+     * @return 是否写入成功
+     */
+    private boolean writeViaManager(Object mgr,
+                                    int fBank, int fStartBit, int fLenBits, String fData,
+                                    int writeBank, int startWord,
+                                    byte[] dataBytes, String dataHex, String pwd) {
+        Class<?> mc = mgr.getClass();
+        byte[] filterBytes = hexToBytes(fData);
+
+        // ---- 第一组：带过滤写（最安全，只写匹配标签）----
+        // 候选 A：writeTagWithFilter(int fBank,int fStartBlock,int fLen,String fData,int writeBank,int startBlock,String writeData,String pwd)
+        // 候选 B：writeTagWithFilter(int fBank,int fStartBlock,int fLen,byte[],int writeBank,int startBlock,byte[],String pwd)
+        Object[][][] filtered = new Object[][][]{
+                {{"writeTagWithFilter", int.class, int.class, int.class, String.class, int.class, int.class, String.class, String.class},
+                        new Object[]{fBank, fStartBit, fLenBits, fData, writeBank, startWord, dataHex, pwd}},
+                {{"writeTagWithFilter", int.class, int.class, int.class, byte[].class, int.class, int.class, byte[].class, String.class},
+                        new Object[]{fBank, fStartBit, fLenBits, filterBytes, writeBank, startWord, dataBytes, pwd}},
+        };
+        boolean triedFiltered = false;
+        for (Object[][] c : filtered) {
+            String name = (String) c[0][0];
+            Class<?>[] types = new Class<?>[c[0].length - 1];
+            for (int i = 1; i < c[0].length; i++) types[i - 1] = (Class<?>) c[0][i];
+            Object[] args = (Object[]) c[1];
+            try {
+                Method m = mc.getMethod(name, types);
+                triedFiltered = true;
+                Log.i(TAG, "writeViaManager: 命中过滤写方法 " + m.toString());
+                Object r = m.invoke(mgr, args);
+                boolean ok = interpretWriteReturn(r);
+                Log.i(TAG, "writeViaManager: " + name + " 返回=" + r + " -> ok=" + ok);
+                if (ok) return true;
+                Log.w(TAG, "writeViaManager: 过滤写返回未指示成功，继续尝试同组其它候选");
+            } catch (NoSuchMethodException e) {
+                Log.d(TAG, "writeViaManager: 管理器无 " + name + "(" + types.length + "参) 方法，跳过");
+            } catch (Throwable e) {
+                Log.w(TAG, "writeViaManager: 调用过滤写 " + name + " 异常", e);
+            }
+        }
+        if (triedFiltered) {
+            // 过滤写方法存在但失败 -> 不降级到普通写（避免误写其它标签）
+            Log.w(TAG, "writeViaManager: 过滤写方法存在但返回失败，不再降级普通写（防误写）");
+            logManagerMethods();
             return false;
         }
-        Bundle b = (Bundle) r;
-        Log.i(TAG, "write bundle keys=" + bundleKeys(b));
-        if (b.containsKey("result")) return b.getBoolean("result", false);
-        // 部分固件用 data 字段回读；有 data 视为成功
-        String data = b.getString("data");
-        return data != null && !data.isEmpty();
+
+        // ---- 第二组：普通 writeTag（需范围内仅一张标签，由业务层 gate 保证）----
+        // 候选 C：writeTag(int bank,int ptr,byte[],String pwd)
+        // 候选 D：writeTag(int bank,int ptr,String hexData,String pwd)
+        Object[][][] plain = new Object[][][]{
+                {{"writeTag", int.class, int.class, byte[].class, String.class},
+                        new Object[]{writeBank, startWord, dataBytes, pwd}},
+                {{"writeTag", int.class, int.class, String.class, String.class},
+                        new Object[]{writeBank, startWord, dataHex, pwd}},
+        };
+        for (Object[][] c : plain) {
+            String name = (String) c[0][0];
+            Class<?>[] types = new Class<?>[c[0].length - 1];
+            for (int i = 1; i < c[0].length; i++) types[i - 1] = (Class<?>) c[0][i];
+            Object[] args = (Object[]) c[1];
+            try {
+                Method m = mc.getMethod(name, types);
+                Log.i(TAG, "writeViaManager: 命中普通写方法 " + m.toString());
+                Object r = m.invoke(mgr, args);
+                boolean ok = interpretWriteReturn(r);
+                Log.i(TAG, "writeViaManager: " + name + " 返回=" + r + " -> ok=" + ok);
+                if (ok) return true;
+                Log.w(TAG, "writeViaManager: 普通写返回未指示成功，继续尝试同组其它候选");
+            } catch (NoSuchMethodException e) {
+                Log.d(TAG, "writeViaManager: 管理器无 " + name + "(" + types.length + "参) 方法，跳过");
+            } catch (Throwable e) {
+                Log.w(TAG, "writeViaManager: 调用普通写 " + name + " 异常", e);
+            }
+        }
+
+        Log.e(TAG, "writeViaManager: 未找到任何可用的写方法（已列出管理器 write 方法供诊断）");
+        logManagerMethods();
+        return false;
+    }
+
+    /** 解释写方法返回值：boolean 直接判；int 判 >=0；Bundle 看 result/data；String 看非空且非 "0"/"false" */
+    private boolean interpretWriteReturn(Object r) {
+        if (r == null) return false;
+        if (r instanceof Boolean) return (Boolean) r;
+        if (r instanceof Integer) return (Integer) r >= 0;
+        if (r instanceof Bundle) {
+            Bundle b = (Bundle) r;
+            Log.i(TAG, "write bundle keys=" + bundleKeys(b));
+            if (b.containsKey("result")) return b.getBoolean("result", false);
+            String data = b.getString("data");
+            return data != null && !data.isEmpty();
+        }
+        if (r instanceof String) {
+            String s = (String) r;
+            return !s.isEmpty() && !"0".equals(s) && !"false".equalsIgnoreCase(s);
+        }
+        return false;
     }
 
     private static String bundleKeys(Bundle b) {
@@ -601,6 +705,32 @@ public class IdataUhfAdapter implements RfidSdk {
         StringBuilder sb = new StringBuilder();
         for (String k : ks) sb.append(k).append("=").append(b.get(k)).append("; ");
         return sb.toString();
+    }
+
+    /** 十六进制串 -> 字节数组（每 2 字符一字节；奇数长度前补 0） */
+    private static byte[] hexToBytes(String s) {
+        if (s == null) return new byte[0];
+        String t = s.trim();
+        if ((t.length() % 2) != 0) t = "0" + t;
+        byte[] out = new byte[t.length() / 2];
+        for (int i = 0; i < out.length; i++) {
+            out[i] = (byte) Integer.parseInt(t.substring(2 * i, 2 * i + 2), 16);
+        }
+        return out;
+    }
+
+    /** 诊断：列出管理器（UHFManager 活实例）上所有 write / read 方法签名，便于确认固件真实 API */
+    private void logManagerMethods() {
+        Object mgr = (mRawManager != null) ? mRawManager : mUhf;
+        if (mgr == null) { Log.w(TAG, "logManagerMethods: 无管理器实例"); return; }
+        Class<?> c = mgr.getClass();
+        StringBuilder sb = new StringBuilder("UHFManager(").append(c.getName()).append(") 方法: ");
+        for (Method m : c.getMethods()) {
+            String n = m.getName();
+            if (n.toLowerCase().contains("write") || n.toLowerCase().contains("read"))
+                sb.append("\n  ").append(m.toString());
+        }
+        Log.i(TAG, sb.toString());
     }
 
     @Override
