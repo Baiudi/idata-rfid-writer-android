@@ -34,10 +34,10 @@
     <string name="btn_inventory">开始盘点</string>
 
     <!-- A1 标签资产编号写入（仅写 USER 区，保留标定 EPC） -->
-    <string name="a1_section_title">A1 标签资产编号写入（仅写 USER 区，保留标定 EPC）</string>
-    <string name="btn_read_a1">① 读取 A1 数据</string>
-    <string name="btn_write_a1">② 写入 A1 资产编号 PC00001</string>
-    <string name="tv_a1_result">A1 写入结果：未操作</string>
+    <string name="a1_section_title">C1 标签资产编号写入（仅写 USER 区，保留标定 EPC）</string>
+    <string name="btn_read_a1">① 读取 C1 数据</string>
+    <string name="btn_write_a1">② 写入 C1 资产编号 PC00001</string>
+    <string name="tv_a1_result">C1 写入结果：未操作</string>
     <string name="btn_locate">定位标签</string>
     <string name="btn_export">导出结果JSON</string>
     <string name="btn_sync">同步到dws台账</string>

@@ -73,7 +73,7 @@ public class MainActivity extends AppCompatActivity {
     private static final String INFO_MAGIC = "R2";         // USER 区结构化信息前缀（v2：八个自定义字段）
 
     // A1 标签资产编号写入：固定锁定 A1 标签，仅写 USER 区，严禁误写其他标签或覆盖标定 EPC
-    private static final String A1_EPC = "E2801191A5040079AE927637"; // A1 固定 EPC（过滤条件，用于精确锁定）
+    private static final String TARGET_EPC = "E2801191A5040079AE927647"; // C1(右) 固定 EPC（过滤条件，用于精确锁定；物理标签 = C1/右）
     private static final int A1_FILTER_BANK = 1;          // 以 EPC 区构造过滤
     private static final int A1_FILTER_START_BIT = 32;    // 跳过前 2 字 CRC/PC
     private static final int A1_FILTER_LEN_BITS = 96;     // 12 字 EPC = 96 bit（24 个 hex 字符）
@@ -969,11 +969,11 @@ public class MainActivity extends AppCompatActivity {
         }).start();
     }
 
-    // ----------------- A1 标签资产编号写入（固定锁定 A1，仅写 USER 区） -----------------
+    // ----------------- C1 标签资产编号写入（固定锁定 C1，仅写 USER 区） -----------------
 
     /**
      * A1 标签资产编号写入：步骤① 读取 A1 标签数据（TID/EPC/USER）。
-     * 以固定 A1_EPC 作为过滤条件精确锁定 A1，绝不读取/锁定其他标签；不调用 detectSingleTag，
+     * 以固定 TARGET_EPC 作为过滤条件精确锁定 A1，绝不读取/锁定其他标签；不调用 detectSingleTag，
      * 避免在多标签场景下误锁到非 A1 的标签。
      */
     private void readA1Data() {
@@ -987,12 +987,12 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
         reading = true;
-        setStatus("正在读取 A1 标签…");
+        setStatus("正在读取 C1 标签…");
         sdk.setPower(getParam("power", 30));            // 读取保持正常功率，扩大 A1 读取范围
         new Thread(() -> {
             try {
                 // 构造 A1 固定过滤条件（bank=1, 跳过前 2 字 CRC/PC, 96bit=24hex 字符）
-                String fData = A1_EPC;
+                String fData = TARGET_EPC;
                 int fBank = A1_FILTER_BANK;
                 int fStartBit = A1_FILTER_START_BIT;
                 int fLenBits = A1_FILTER_LEN_BITS;
@@ -1003,10 +1003,10 @@ public class MainActivity extends AppCompatActivity {
                 String user = sdk.readTagSync(3, 0, 16, PWD, READ_TIMEOUT_MS, fData, fBank, fStartBit, fLenBits);
                 String userUtf8 = user != null ? FormatUtil.hexToUtf8(user) : "";
 
-                // 校验是否真的锁到了 A1（EPC 回读需匹配固定 A1_EPC），避免误读其他标签
-                // EPC 读取为 8 字(32 hex)，A1_EPC 仅 24 hex；用前缀匹配避免长度不等导致的假阴性
-                boolean locked = epc != null && epc.toUpperCase().startsWith(A1_EPC.toUpperCase());
-                String disp = "锁定 A1(EPC=" + A1_EPC + "): " + (locked ? "成功 ✓" : "失败（未读到匹配 EPC 的标签）")
+                // 校验是否真的锁到了 A1（EPC 回读需匹配固定 TARGET_EPC），避免误读其他标签
+                // EPC 读取为 8 字(32 hex)，TARGET_EPC 仅 24 hex；用前缀匹配避免长度不等导致的假阴性
+                boolean locked = epc != null && epc.toUpperCase().startsWith(TARGET_EPC.toUpperCase());
+                String disp = "锁定 C1(EPC=" + TARGET_EPC + "): " + (locked ? "成功 ✓" : "失败（未读到匹配 EPC 的标签）")
                         + "\nTID  : " + nz(tid)
                         + "\nEPC  : " + nz(epc)
                         + "\nUSER : " + nz(user)
@@ -1014,7 +1014,7 @@ public class MainActivity extends AppCompatActivity {
                 final boolean okLock = locked;
                 runOnUiThread(() -> {
                     if (tvA1Result != null) tvA1Result.setText(disp);
-                    setStatus(okLock ? "A1 读取完成（TID/EPC/USER 已读）" : "A1 读取失败：未读到匹配 EPC 的标签");
+                    setStatus(okLock ? "C1 读取完成（TID/EPC/USER 已读）" : "C1 读取失败：未读到匹配 EPC 的标签");
                 });
             } finally {
                 reading = false;
@@ -1024,7 +1024,7 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * A1 标签资产编号写入：步骤③ 把资产编号 "R2|PC00001" 写入 A1 标签的 USER 区（bank3, word0）。
-     * 三重保险：① 固定 A1_EPC 过滤，仅 A1 命中，绝不误写其他标签；② 只写 USER 区，不碰标定 EPC；
+     * 三重保险：① 固定 TARGET_EPC 过滤，仅 A1 命中，绝不误写其他标签；② 只写 USER 区，不碰标定 EPC；
      * ③ 写前降功率（≤20dBm）避免误写邻近标签。写入后回读校验断言 USER 内容等于 "R2|PC00001"。
      */
     private void writeA1Asset() {
@@ -1039,23 +1039,23 @@ public class MainActivity extends AppCompatActivity {
         }
         writing = true;
         if (btnWriteA1 != null) btnWriteA1.setEnabled(false);
-        setStatus("正在写入 A1 标签…");
+        setStatus("正在写入 C1 标签…");
         sdk.setPower(Math.min(getParam("power", 30), 20)); // 写前降功率，避免误写邻近标签
         new Thread(() -> {
             String resultMsg;
             try {
-                // 构造 A1 固定过滤条件（始终基于 A1_EPC，确保只写 A1）
-                String fData = A1_EPC;
+                // 构造 A1 固定过滤条件（始终基于 TARGET_EPC，确保只写 A1）
+                String fData = TARGET_EPC;
                 int fBank = A1_FILTER_BANK;
                 int fStartBit = A1_FILTER_START_BIT;
                 int fLenBits = A1_FILTER_LEN_BITS;
 
-                // 写入 USER 区（bank3, word0），内容 "R2|PC00001"，带 A1_EPC 过滤
+                // 写入 USER 区（bank3, word0），内容 "R2|PC00001"，带 TARGET_EPC 过滤
                 boolean ok = sdk.writeTagWithFilterSync(
                         fBank, fStartBit, fLenBits, fData,
                         A1_WRITE_BANK, A1_WRITE_START_WORD, A1_WRITE_PAYLOAD, PWD, WRITE_TIMEOUT_MS);
                 if (!ok) {
-                    resultMsg = "失败：A1(USER 区) 写入失败（未匹配到 A1 标签，或写入超时）";
+                    resultMsg = "失败：C1(USER 区) 写入失败（未匹配到 C1 标签，或写入超时）";
                 } else {
                     // 回读校验：读取 USER 区实际写入内容，断言等于 "R2|PC00001"
                     byte[] payloadBytes = A1_WRITE_PAYLOAD.getBytes(StandardCharsets.UTF_8);
@@ -1065,7 +1065,7 @@ public class MainActivity extends AppCompatActivity {
                     String rUtf8 = rUser != null ? FormatUtil.hexToUtf8(rUser) : "";
                     boolean verified = A1_WRITE_PAYLOAD.equals(rUtf8);
                     resultMsg = verified
-                            ? "成功 ✓ 已将资产编号 PC00001 写入 A1 的 USER 区，回读校验通过（" + rUtf8 + "）"
+                            ? "成功 ✓ 已将资产编号 PC00001 写入 C1 的 USER 区，回读校验通过（" + rUtf8 + "）"
                             : "失败：回读不一致（期望 " + A1_WRITE_PAYLOAD + "，实际 " + rUtf8 + "）";
                 }
             } catch (Exception e) {
